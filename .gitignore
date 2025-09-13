@@ -154,6 +154,8 @@ celerybeat.pid
 /ENV*
 /higgs_audio_env*
 /venv*
+higgs-audio-env/
+test_output.wav
 
 # Spyder project settings
 .spyderproject
