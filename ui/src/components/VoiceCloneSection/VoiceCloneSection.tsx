@@ -1,0 +1,179 @@
+import React, { useRef } from 'react';
+import { useAudioContext } from '../../context/AudioContext';
+import { audioService } from '../../services/audioService';
+import { IconUpload, IconX, IconMic } from '../../icons';
+import { Button } from '../ui/Button';
+import { Card } from '../ui/Card';
+
+export const VoiceCloneSection: React.FC = () => {
+  const {
+    voiceToClone,
+    setVoiceToClone,
+    clonedVoiceName,
+    setClonedVoiceName,
+    isCloning,
+    setIsCloning,
+    cloningError,
+    setCloningError,
+    cloningSuccess,
+    setCloningSuccess,
+  } = useAudioContext();
+  
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setVoiceToClone(file);
+      setCloningSuccess(false);
+      setCloningError(null);
+    }
+  };
+
+  const handleRemoveFile = () => {
+    setVoiceToClone(null);
+    setClonedVoiceName('');
+    setCloningSuccess(false);
+    setCloningError(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  const handleCloneVoice = async () => {
+    if (!voiceToClone || !clonedVoiceName.trim()) {
+      setCloningError('Please provide both a voice sample and a name');
+      return;
+    }
+
+    setIsCloning(true);
+    setCloningError(null);
+    setCloningSuccess(false);
+
+    try {
+      await audioService.cloneVoice(voiceToClone, clonedVoiceName);
+      setCloningSuccess(true);
+      // Reset form after success
+      setTimeout(() => {
+        handleRemoveFile();
+      }, 3000);
+    } catch (error) {
+      setCloningError('Failed to clone voice. Please try again.');
+      console.error('Voice cloning error:', error);
+    } finally {
+      setIsCloning(false);
+    }
+  };
+
+  return (
+    <Card gradient className="p-8">
+      <div className="space-y-6">
+        <div>
+          <h2 className="text-2xl font-semibold text-white mb-2">Voice Cloning</h2>
+          <p className="text-gray-400 text-sm">Upload a voice sample to create a custom voice for text-to-speech</p>
+        </div>
+
+        <div className="space-y-4">
+          {/* Voice Name Input */}
+          <div className="space-y-2">
+            <label className="block text-sm font-medium text-gray-300">Voice Name</label>
+            <input
+              type="text"
+              className="w-full p-3 bg-gray-800/50 border border-gray-700 rounded-xl text-gray-100 placeholder-gray-500 focus:ring-2 focus:ring-blue-500 focus:border-transparent focus:outline-none transition-all duration-200"
+              placeholder="e.g., John's Voice, Professional Narrator"
+              value={clonedVoiceName}
+              onChange={(e) => setClonedVoiceName(e.target.value)}
+              disabled={isCloning}
+            />
+          </div>
+
+          {/* File Upload */}
+          <div className="space-y-2">
+            <label className="block text-sm font-medium text-gray-300">Voice Sample</label>
+            {!voiceToClone ? (
+              <div
+                onClick={() => fileInputRef.current?.click()}
+                className="relative w-full p-8 border-2 border-dashed border-gray-700 rounded-xl text-center hover:border-blue-500 hover:bg-gray-800/30 transition-all duration-300 cursor-pointer group"
+              >
+                <div className="flex flex-col items-center justify-center space-y-3">
+                  <div className="p-3 bg-gray-800 rounded-full group-hover:bg-gray-700 transition-colors">
+                    <IconMic className="w-8 h-8 text-gray-400 group-hover:text-blue-400 transition-colors" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium text-gray-300">Click to upload voice sample</p>
+                    <p className="text-xs text-gray-500 mt-1">WAV, MP3, or M4A (max 10MB, 10-30 seconds recommended)</p>
+                  </div>
+                </div>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  className="hidden"
+                  accept="audio/*"
+                  onChange={handleFileSelect}
+                  disabled={isCloning}
+                />
+              </div>
+            ) : (
+              <div className="flex items-center justify-between p-4 bg-gray-800/50 border border-gray-700 rounded-xl">
+                <div className="flex items-center space-x-3">
+                  <div className="p-2 bg-blue-900/50 rounded-lg">
+                    <IconMic className="w-5 h-5 text-blue-400" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium text-gray-200">{voiceToClone.name}</p>
+                    <p className="text-xs text-gray-500">
+                      {(voiceToClone.size / 1024 / 1024).toFixed(2)} MB
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={handleRemoveFile}
+                  className="p-2 hover:bg-gray-700 rounded-lg transition-colors"
+                  disabled={isCloning}
+                >
+                  <IconX className="w-4 h-4 text-gray-400" />
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Clone Button */}
+          <Button
+            variant="primary"
+            size="lg"
+            fullWidth
+            onClick={handleCloneVoice}
+            disabled={!voiceToClone || !clonedVoiceName.trim() || isCloning}
+            isLoading={isCloning}
+          >
+            <IconUpload className="w-5 h-5" />
+            <span className="ml-2">{isCloning ? 'Cloning Voice...' : 'Clone and Upload'}</span>
+          </Button>
+
+          {/* Status Messages */}
+          {isCloning && (
+            <div className="p-4 bg-blue-900/20 border border-blue-800/50 rounded-xl">
+              <p className="text-sm text-blue-300">
+                Voice cloning in progress. This may take several minutes to hours depending on the queue...
+              </p>
+            </div>
+          )}
+
+          {cloningSuccess && (
+            <div className="p-4 bg-green-900/20 border border-green-800/50 rounded-xl">
+              <p className="text-sm text-green-400">
+                ✓ Voice cloned successfully! It will appear in the voice selection dropdown.
+              </p>
+            </div>
+          )}
+
+          {cloningError && (
+            <div className="p-4 bg-red-900/20 border border-red-800/50 rounded-xl">
+              <p className="text-sm text-red-400">{cloningError}</p>
+            </div>
+          )}
+        </div>
+      </div>
+    </Card>
+  );
+};
