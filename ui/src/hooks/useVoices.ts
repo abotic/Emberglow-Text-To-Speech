@@ -1,30 +1,31 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { Voice } from '../types';
 import { audioService } from '../services/audioService';
+import { useAudioContext } from '../context/AudioContext';
 
 export const useVoices = () => {
-    const [voices, setVoices] = useState<Voice[]>([]);
-    const [isLoadingVoices, setIsLoadingVoices] = useState(true);
-    const [voicesError, setVoicesError] = useState<string | null>(null);
+  const { refreshVoices: voiceListVersion } = useAudioContext();
+  const [voices, setVoices] = useState<Voice[]>([]);
+  const [isLoadingVoices, setIsLoadingVoices] = useState(true);
+  const [voicesError, setVoicesError] = useState<string | null>(null);
 
-    const fetchVoices = useCallback(async () => {
-        try {
-            setIsLoadingVoices(true);
-            const fetchedVoices = await audioService.getAvailableVoices();
-            setVoices(fetchedVoices);
-            setVoicesError(null);
-        } catch (error) {
-            setVoicesError('Failed to load voices');
-            console.error('Error fetching voices:', error);
-        } finally {
-            setIsLoadingVoices(false);
-        }
-    }, []);
+  useEffect(() => {
+    const fetchVoices = async () => {
+      try {
+        setIsLoadingVoices(true);
+        const fetchedVoices = await audioService.getAvailableVoices();
+        setVoices(fetchedVoices);
+        setVoicesError(null);
+      } catch (error) {
+        setVoicesError('Failed to load voices');
+        console.error('Error fetching voices:', error);
+      } finally {
+        setIsLoadingVoices(false);
+      }
+    };
 
-    useEffect(() => {
-        fetchVoices();
-    }, [fetchVoices]);
+    fetchVoices();
+  }, [voiceListVersion]); // Re-run this effect whenever refreshVoices is called
 
-    // Expose a function to manually refresh the voice list
-    return { voices, isLoadingVoices, voicesError, refreshVoices: fetchVoices };
+  return { voices, isLoadingVoices, voicesError };
 };
