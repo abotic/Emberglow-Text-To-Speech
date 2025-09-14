@@ -4,7 +4,7 @@ import { audioService } from '../services/audioService';
 import { useAudioContext } from '../context/AudioContext';
 
 export const useVoices = () => {
-  const { refreshVoices: voiceListVersion } = useAudioContext();
+  const { refreshVoices: voiceListVersion } = useAudioContext(); // Listen to the refresh trigger
   const [voices, setVoices] = useState<Voice[]>([]);
   const [isLoadingVoices, setIsLoadingVoices] = useState(true);
   const [voicesError, setVoicesError] = useState<string | null>(null);
@@ -29,3 +29,4 @@ export const useVoices = () => {
 
   return { voices, isLoadingVoices, voicesError };
 };
+

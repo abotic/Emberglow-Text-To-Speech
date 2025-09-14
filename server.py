@@ -1,6 +1,6 @@
 import uvicorn
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 import torch
 import soundfile as sf
@@ -10,16 +10,20 @@ import json
 import base64
 import re
 import numpy as np
-import io
 from typing import List, Dict
 
 from boson_multimodal.serve.serve_engine import HiggsAudioServeEngine
 from boson_multimodal.data_types import ChatMLSample, Message, AudioContent
 
-# --- Application Setup ---
+# --- Application State and Setup ---
 
+# In-memory storage for projects and tasks. In a production scenario, this would be a database.
+projects: Dict[str, Dict] = {}
 tasks: Dict[str, Dict] = {}
+
+STORAGE_DIR = "generated_audio"
 CLONED_VOICES_DIR = "cloned_voices"
+os.makedirs(STORAGE_DIR, exist_ok=True)
 os.makedirs(CLONED_VOICES_DIR, exist_ok=True)
 
 app = FastAPI(title="Higgs Audio Generation API")
@@ -33,7 +37,6 @@ app.add_middleware(
 )
 
 print("Initializing HiggsAudioServeEngine...")
-# Forcing CPU for local development on Mac to avoid MPS issues - I will get back to it before deploying on GPU
 device = "cpu"
 serve_engine = HiggsAudioServeEngine(
     "bosonai/higgs-audio-v2-generation-3B-base",
@@ -42,43 +45,87 @@ serve_engine = HiggsAudioServeEngine(
 )
 print(f"Model loaded and running on device: {device}")
 
-# --- Text and Audio Processing Logic ---
+# --- Helper Functions ---
 
-def split_text_into_chunks(text: str, chunk_size: int = 1000):
-    """Splits text into chunks, respecting sentence boundaries."""
+def normalize_text_for_tts(text: str) -> str:
     text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+def split_text_into_chunks(text: str, words_per_chunk: int = 250):
     sentences = re.split(r'(?<=[.?!])\s+', text)
     chunks = []
     current_chunk = ""
     for sentence in sentences:
-        if len(current_chunk) + len(sentence) + 1 <= chunk_size:
-            current_chunk += sentence + " "
+        if len(current_chunk.split()) + len(sentence.split()) > words_per_chunk and current_chunk:
+            chunks.append(current_chunk.strip())
+            current_chunk = sentence
         else:
-            if current_chunk:
-                chunks.append(current_chunk.strip())
-            current_chunk = sentence + " "
+            current_chunk += " " + sentence
     if current_chunk:
         chunks.append(current_chunk.strip())
-    return chunks
+    return [c.strip() for c in chunks if c.strip()]
 
-def do_audio_generation(task_id: str, messages: List[Message], initial_text: str, generation_params: dict):
-    """Background audio generation process with a fixed voice reference for maximum consistency."""
+
+# --- UNIFIED Background Generation Logic ---
+
+def do_longform_generation(task_id: str, messages: List[Message], initial_text: str, generation_params: dict):
+    """
+    Performs robust, chunked audio generation for any long-form text.
+    This function now powers BOTH the Standard and Safe TTS tabs.
+    """
     temp_files = []
     try:
         tasks[task_id]['status'] = 'processing'
-        text_chunks = split_text_into_chunks(initial_text)
+        
+        normalized_text = normalize_text_for_tts(initial_text)
+        text_chunks = split_text_into_chunks(normalized_text)
+        
+        if not text_chunks:
+             raise ValueError("Input text was empty after normalization.")
+
         audio_chunks = []
         
         # This will hold the path to the FIRST generated audio chunk, used as a fixed reference.
         fixed_reference_audio_path = None
-        base_messages = list(messages)
+        
+        # --- Chunk 1: Establish the Voice Reference ---
+        print(f"Generating chunk 1/{len(text_chunks)} for task {task_id} (establishing voice reference)...")
+        first_chunk_messages = messages + [Message(role="user", content=text_chunks[0])]
+        chat_ml_sample = ChatMLSample(messages=first_chunk_messages)
+        
+        output = serve_engine.generate(
+            chat_ml_sample=chat_ml_sample,
+            max_new_tokens=8192,
+            stop_strings=["<|end_of_text|>", "<|eot_id|>"],
+            **generation_params
+        )
 
-        for i, chunk in enumerate(text_chunks):
-            print(f"Generating chunk {i+1}/{len(text_chunks)} for task {task_id}...")
+        if output.audio is None or len(output.audio) == 0:
+            raise ValueError("Audio generation for the first chunk failed. Cannot proceed.")
 
-            current_messages = base_messages + [Message(role="user", content=chunk)]
+        audio_chunks.append(output.audio)
+
+        # Save the first chunk's audio to a temporary file to act as the fixed reference.
+        fixed_reference_audio_path = os.path.join(STORAGE_DIR, f"temp_{task_id}_ref.wav")
+        sf.write(fixed_reference_audio_path, output.audio, serve_engine.audio_tokenizer.sampling_rate)
+        temp_files.append(fixed_reference_audio_path)
+
+        with open(fixed_reference_audio_path, "rb") as audio_file:
+            audio_base64 = base64.b64encode(audio_file.read()).decode('utf-8')
+
+        # This is now the ONLY reference that will be used for all subsequent chunks.
+        fixed_reference_messages = [
+            Message(role="user", content="Reference audio for voice cloning."),
+            Message(role="assistant", content=AudioContent(raw_audio=audio_base64, audio_url="placeholder")),
+        ]
+
+        # --- Subsequent Chunks: Use the Fixed Reference ---
+        for i, chunk in enumerate(text_chunks[1:], start=2):
+            print(f"Generating chunk {i}/{len(text_chunks)} for task {task_id}...")
+
+            current_messages = fixed_reference_messages + [Message(role="user", content=chunk)]
             chat_ml_sample = ChatMLSample(messages=current_messages)
-
+            
             output = serve_engine.generate(
                 chat_ml_sample=chat_ml_sample,
                 max_new_tokens=8192,
@@ -86,41 +133,15 @@ def do_audio_generation(task_id: str, messages: List[Message], initial_text: str
                 **generation_params
             )
 
-            if output.audio is None or len(output.audio) == 0:
-                print(f"Warning: Chunk {i+1} produced no audio.")
-                continue
+            if output.audio is not None and len(output.audio) > 0:
+                audio_chunks.append(output.audio)
+            else:
+                print(f"Warning: Chunk {i} produced no audio.")
 
-            audio_chunks.append(output.audio)
-
-            # If this is the first chunk, save its audio as the fixed reference for all future chunks.
-            if i == 0:
-                # Save the first chunk's audio to a temporary file.
-                temp_chunk_path = os.path.join(CLONED_VOICES_DIR, f"temp_{task_id}_ref.wav")
-                sf.write(temp_chunk_path, output.audio, serve_engine.audio_tokenizer.sampling_rate)
-                temp_files.append(temp_chunk_path)
-                fixed_reference_audio_path = temp_chunk_path
-
-                # Now, update the base messages to use this fixed reference.
-                with open(fixed_reference_audio_path, "rb") as audio_file:
-                    audio_base64 = base64.b64encode(audio_file.read()).decode('utf-8')
-
-                found_audio = False
-                for msg in reversed(base_messages):
-                    if isinstance(msg.content, AudioContent):
-                        msg.content.raw_audio = audio_base64
-                        found_audio = True
-                        break
-                if not found_audio:
-                     # This happens for the first "Smart Voice" chunk.
-                    base_messages.insert(0, Message(role="assistant", content=AudioContent(raw_audio=audio_base64, audio_url="placeholder")))
-                    base_messages.insert(0, Message(role="user", content="Reference audio for voice cloning."))
-
-        if not audio_chunks:
-            raise ValueError("No audio was generated.")
-
+        # --- Finalization ---
         final_audio = np.concatenate(audio_chunks)
         output_filename = f"{task_id}.wav"
-        output_path = os.path.join(CLONED_VOICES_DIR, output_filename)
+        output_path = os.path.join(STORAGE_DIR, output_filename)
         sf.write(output_path, final_audio, serve_engine.audio_tokenizer.sampling_rate)
 
         tasks[task_id]['status'] = 'completed'
@@ -131,86 +152,179 @@ def do_audio_generation(task_id: str, messages: List[Message], initial_text: str
         tasks[task_id]['status'] = 'failed'
         tasks[task_id]['error'] = str(e)
     finally:
-        # Clean up temporary chunk files
+        # Clean up the temporary reference file
         for f in temp_files:
             if os.path.exists(f):
                 os.remove(f)
 
+def do_project_chunk_generation(project_id: str, chunk_index: int):
+    """Generates audio for a single chunk of a project for the 'Safe Long-Form' tab."""
+    project = projects.get(project_id)
+    if not project: return
+        
+    chunk = project['chunks'][chunk_index]
+    chunk['status'] = 'processing'
+    
+    try:
+        messages = []
+        voice_ref_path = project.get("voice_ref_path")
+        
+        if voice_ref_path and os.path.exists(voice_ref_path):
+            with open(voice_ref_path, "rb") as audio_file:
+                audio_base64 = base64.b64encode(audio_file.read()).decode('utf-8')
+            messages.extend([
+                Message(role="user", content="Reference audio for voice cloning."),
+                Message(role="assistant", content=AudioContent(raw_audio=audio_base64, audio_url="placeholder")),
+            ])
+        
+        messages.append(Message(role="user", content=chunk['text']))
+        chat_ml_sample = ChatMLSample(messages=messages)
+
+        output = serve_engine.generate(
+            chat_ml_sample=chat_ml_sample, max_new_tokens=8192,
+            stop_strings=["<|end_of_text|>", "<|eot_id|>"],
+            temperature=project['params']['temperature'], top_p=project['params']['top_p']
+        )
+
+        if output.audio is None or len(output.audio) == 0:
+            raise ValueError("Model produced no audio for this chunk.")
+
+        chunk_filename = f"{project_id}_chunk_{chunk_index}.wav"
+        chunk_path = os.path.join(STORAGE_DIR, chunk_filename)
+        sf.write(chunk_path, output.audio, serve_engine.audio_tokenizer.sampling_rate)
+
+        chunk['status'] = 'completed'
+        chunk['audio_filename'] = chunk_filename
+    except Exception as e:
+        print(f"Error generating chunk {chunk_index} for project {project_id}: {e}")
+        chunk['status'] = 'failed'
+        chunk['error'] = str(e)
+
+
 # --- API Endpoints ---
+
+@app.post("/project", status_code=202, tags=["Project"])
+async def create_project(
+    background_tasks: BackgroundTasks, text: str = Form(...), voice_id: str = Form(...),
+    temperature: float = Form(0.3), top_p: float = Form(0.95),
+):
+    project_id = f"proj_{uuid.uuid4().hex}"
+    normalized_text = normalize_text_for_tts(text)
+    text_chunks = split_text_into_chunks(normalized_text)
+
+    if not text_chunks:
+        raise HTTPException(status_code=400, detail="Input text is too short to create a project.")
+
+    projects[project_id] = {
+        "id": project_id, "status": "processing",
+        "params": {"temperature": temperature, "top_p": top_p},
+        "chunks": [{"index": i, "text": chunk, "status": "pending"} for i, chunk in enumerate(text_chunks)],
+        "voice_ref_path": None, "final_audio_path": None
+    }
+
+    voice_ref_path = None
+    if voice_id != "smart_voice":
+        voice_ref_path = os.path.join(CLONED_VOICES_DIR, f"{voice_id}.wav")
+        if not os.path.exists(voice_ref_path):
+            raise HTTPException(status_code=404, detail="Cloned voice sample not found.")
+        projects[project_id]["voice_ref_path"] = voice_ref_path
+
+    do_project_chunk_generation(project_id, 0)
+    
+    if voice_id == "smart_voice":
+        first_chunk_path = projects[project_id]['chunks'][0].get('audio_filename')
+        if first_chunk_path:
+             projects[project_id]["voice_ref_path"] = os.path.join(STORAGE_DIR, first_chunk_path)
+        else:
+            projects[project_id].update({'status': 'failed', 'error': 'Failed to generate initial chunk for Smart Voice.'})
+            return {"project_id": project_id, "status": "failed"}
+
+    for i in range(1, len(text_chunks)):
+        background_tasks.add_task(do_project_chunk_generation, project_id, i)
+
+    return {"project_id": project_id, "status": "processing"}
+
+@app.get("/project/{project_id}", tags=["Project"])
+async def get_project_status(project_id: str):
+    return projects.get(project_id, HTTPException(status_code=404, detail="Project not found"))
+
+@app.post("/project/{project_id}/chunk/{chunk_index}/regenerate", status_code=202, tags=["Project"])
+async def regenerate_chunk(project_id: str, chunk_index: int, background_tasks: BackgroundTasks):
+    project = projects.get(project_id)
+    if not project or chunk_index >= len(project['chunks']):
+        raise HTTPException(status_code=404, detail="Project or chunk not found")
+    
+    if chunk_index == 0 and project.get('voice_ref_path', '').endswith("_chunk_0.wav"):
+         raise HTTPException(status_code=400, detail="Cannot regenerate the reference chunk for a Smart Voice project.")
+
+    background_tasks.add_task(do_project_chunk_generation, project_id, chunk_index)
+    return {"message": f"Regeneration started for chunk {chunk_index}."}
+
+@app.post("/project/{project_id}/stitch", tags=["Project"])
+async def stitch_project_audio(project_id: str):
+    project = projects.get(project_id)
+    if not project: raise HTTPException(status_code=404, detail="Project not found")
+
+    audio_chunks = []
+    for chunk in sorted(project['chunks'], key=lambda x: x['index']):
+        if chunk['status'] != 'completed' or 'audio_filename' not in chunk:
+            raise HTTPException(status_code=400, detail=f"Chunk {chunk['index'] + 1} is not ready.")
+        
+        chunk_path = os.path.join(STORAGE_DIR, chunk['audio_filename'])
+        audio_data, _ = sf.read(chunk_path)
+        audio_chunks.append(audio_data)
+
+    final_audio = np.concatenate(audio_chunks)
+    final_filename = f"{project_id}_final.wav"
+    final_path = os.path.join(STORAGE_DIR, final_filename)
+    sf.write(final_path, final_audio, serve_engine.audio_tokenizer.sampling_rate)
+    
+    project.update({'final_audio_path': final_filename, 'status': 'complete'})
+    return {"final_audio_filename": final_filename}
 
 @app.get("/voices", tags=["Voices"])
 async def get_voices():
-    default_voices = [
-        {"id": "smart_voice", "name": "Smart Voice (Auto)", "description": "Model selects a suitable voice", "tags": ["professional", "clear"]},
-    ]
+    default_voices = [{"id": "smart_voice", "name": "Smart Voice (Auto)"}]
     cloned_voices = []
     for filename in os.listdir(CLONED_VOICES_DIR):
         if filename.endswith(".json"):
             try:
                 with open(os.path.join(CLONED_VOICES_DIR, filename), 'r') as f:
-                    metadata = json.load(f)
-                    cloned_voices.append({
-                        "id": metadata["id"], "name": metadata["name"],
-                        "description": "A custom cloned voice", "tags": ["cloned"]
-                    })
+                    cloned_voices.append(json.load(f))
             except Exception as e:
                 print(f"Could not load voice metadata {filename}: {e}")
     return default_voices + cloned_voices
 
-@app.post("/clone-voice", status_code=200, tags=["Voices"])
+@app.post("/clone-voice", tags=["Voices"])
 async def clone_voice(voice_sample: UploadFile = File(...), voice_name: str = Form(...)):
     voice_id = f"clone_{uuid.uuid4().hex[:8]}"
     wav_path = os.path.join(CLONED_VOICES_DIR, f"{voice_id}.wav")
     with open(wav_path, "wb") as buffer:
         buffer.write(await voice_sample.read())
-        
     metadata = {"id": voice_id, "name": voice_name}
     json_path = os.path.join(CLONED_VOICES_DIR, f"{voice_id}.json")
     with open(json_path, 'w') as f:
         json.dump(metadata, f)
-        
-    return {"id": voice_id, "name": voice_name, "message": "Voice successfully saved to library."}
+    return metadata
 
-@app.post("/generate/test-clone", tags=["Generation"])
-async def test_clone(
-    voice_sample: UploadFile = File(...),
-    text: str = Form("Was the final report from NASA really published in 2024? Siobhán, the project lead, couldn’t believe her eyes. ‘It’s a complete success!’ she exclaimed, her voice filled with genuine excitement. The data was unequivocal."),
-    temperature: float = Form(0.3)
-):
-    audio_bytes = await voice_sample.read()
-    audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
-    
-    messages = [
-        Message(role="user", content="Reference audio for voice cloning."),
-        Message(role="assistant", content=AudioContent(raw_audio=audio_base64, audio_url="placeholder")),
-        Message(role="user", content=text),
-    ]
-    chat_ml_sample = ChatMLSample(messages=messages)
+@app.get("/audio/{filename}", tags=["Audio"])
+async def get_audio_file(filename: str):
+    path = os.path.join(STORAGE_DIR, filename)
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(path, media_type="audio/wav")
 
-    output = serve_engine.generate(
-        chat_ml_sample=chat_ml_sample,
-        max_new_tokens=2048,
-        temperature=temperature,
-        top_p=0.95,
-        stop_strings=["<|end_of_text|>", "<|eot_id|>"]
-    )
+@app.get("/generation-status/{task_id}", tags=["Legacy"])
+async def get_generation_status(task_id: str):
+    task = tasks.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return task
 
-    if output.audio is None:
-        raise HTTPException(status_code=500, detail="Audio generation failed.")
-
-    buffer = io.BytesIO()
-    sf.write(buffer, output.audio, output.sampling_rate, format='WAV')
-    buffer.seek(0)
-    return StreamingResponse(buffer, media_type="audio/wav")
-
-
-@app.post("/generate/speech", status_code=202, tags=["Generation"])
-async def generate_speech(
-    background_tasks: BackgroundTasks, 
-    text: str = Form(...), 
-    voice_id: str = Form(...),
-    temperature: float = Form(0.3),
-    top_p: float = Form(0.95)
+@app.post("/generate/speech/oneshot", status_code=202, tags=["Legacy"])
+async def generate_speech_oneshot(
+    background_tasks: BackgroundTasks, text: str = Form(...), voice_id: str = Form(...),
+    temperature: float = Form(0.3), top_p: float = Form(0.95)
 ):
     task_id = f"gen_{uuid.uuid4().hex}"
     tasks[task_id] = {"status": "processing"}
@@ -228,23 +342,10 @@ async def generate_speech(
         ])
     
     generation_params = {"temperature": temperature, "top_p": top_p}
-    background_tasks.add_task(do_audio_generation, task_id, initial_messages, text, generation_params)
+    # THIS IS THE FIX: Call the robust, unified generation function
+    background_tasks.add_task(do_longform_generation, task_id, initial_messages, text, generation_params)
     
     return {"task_id": task_id, "status": "processing"}
-
-@app.get("/generation-status/{task_id}", tags=["Generation"])
-async def get_generation_status(task_id: str):
-    task = tasks.get(task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
-    return task
-
-@app.get("/audio/{filename}", tags=["Generation"])
-async def get_audio_file(filename: str):
-    path = os.path.join(CLONED_VOICES_DIR, filename)
-    if not os.path.exists(path):
-        raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(path, media_type="audio/wav")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

@@ -1,8 +1,6 @@
 import React, { createContext, useContext, useState, ReactNode } from 'react';
 import { Voice } from '../types';
 
-//TODO cleanup this file
-
 interface AudioContextType {
   // Text generation state
   text: string;
@@ -13,14 +11,14 @@ interface AudioContextType {
   setTemperature: (temp: number) => void;
   topP: number;
   setTopP: (topP: number) => void;
-
+  
   audioUrl: string | null;
   setAudioUrl: (url: string | null) => void;
   isGenerating: boolean;
   setIsGenerating: (loading: boolean) => void;
   generationError: string | null;
   setGenerationError: (error: string | null) => void;
-
+  
   // Voice cloning state
   voiceToClone: File | null;
   setVoiceToClone: (file: File | null) => void;
@@ -51,15 +49,15 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationError, setGenerationError] = useState<string | null>(null);
-
+  
   const [voiceToClone, setVoiceToClone] = useState<File | null>(null);
   const [clonedVoiceName, setClonedVoiceName] = useState('');
-  const [isCloning, setIsCloning] = useState(false);
-  const [isTestingVoice, setIsTestingVoice] = useState(false);
+  const [isCloning, setIsCloning] = useState(false); // For saving
+  const [isTestingVoice, setIsTestingVoice] = useState(false); // For testing
   const [cloningError, setCloningError] = useState<string | null>(null);
   const [cloningSuccess, setCloningSuccess] = useState<string | null>(null);
   const [testAudioUrl, setTestAudioUrl] = useState<string | null>(null);
-
+  
   // This state is used as a simple event bus to trigger a refresh in the useVoices hook
   const [voiceListVersion, setVoiceListVersion] = useState(0);
   const refreshVoices = () => setVoiceListVersion(v => v + 1);

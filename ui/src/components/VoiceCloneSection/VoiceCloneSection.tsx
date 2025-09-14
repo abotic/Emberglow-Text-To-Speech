@@ -45,7 +45,7 @@ export const VoiceCloneSection: React.FC = () => {
     setTestAudioUrl(null);
     try {
       // Using a default temperature for testing
-      const audioBlob = await audioService.testClonedVoice(voiceToClone, "Beneath a quiet sky, a curious fox leapt over shimmering water, chasing echoes that whispered both joy and sorrow. Every syllable mattered, every pause held weight, as the story unfolded in a single breath of time.", 0.3);
+      const audioBlob = await audioService.testClonedVoice(voiceToClone, "This is a test of my cloned voice.", 0.3);
       const url = URL.createObjectURL(audioBlob);
       setTestAudioUrl(url);
     } catch (error) {
@@ -90,6 +90,7 @@ export const VoiceCloneSection: React.FC = () => {
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-start">
+            {/* Left Column: Upload & Test */}
             <div className="space-y-4">
                 <div className="space-y-2">
                     <label className="block text-sm font-medium text-gray-300">Voice Sample (10-30s recommended)</label>
@@ -126,6 +127,7 @@ export const VoiceCloneSection: React.FC = () => {
                 {testAudioUrl && <audio controls src={testAudioUrl} className="w-full" />}
             </div>
 
+            {/* Right Column: Name & Save */}
             <div className="space-y-4">
                 <div className="space-y-2">
                     <label className="block text-sm font-medium text-gray-300">Save Voice to Library</label>
@@ -145,6 +147,7 @@ export const VoiceCloneSection: React.FC = () => {
             </div>
         </div>
 
+        {/* Status Messages */}
         <div className="pt-2 space-y-2">
             {cloningSuccess && (
                 <div className="p-3 bg-green-900/20 border border-green-800/50 rounded-xl text-center">

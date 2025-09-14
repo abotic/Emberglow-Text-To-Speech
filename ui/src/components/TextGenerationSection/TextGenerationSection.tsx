@@ -6,12 +6,12 @@ import { IconSparkles } from '../../icons';
 import { Button } from '../ui/Button';
 import { Card } from '../ui/Card';
 
-// Reusable slider component for generation parameters
+// TODO refactor
 const ParameterSlider = ({ label, value, onChange, min, max, step, disabled, helpText }) => (
     <div className="space-y-2">
         <div className="flex justify-between items-center">
             <label className="block text-sm font-medium text-gray-300">{label}</label>
-            <span className="text-sm font-mono bg-gray-700/50 text-sky-300 px-2 py-0.5 rounded">{value}</span>
+            <span className="text-sm font-mono bg-gray-700/50 text-sky-300 px-2 py-0.5 rounded">{value.toFixed(2)}</span>
         </div>
         <input
             type="range"
@@ -51,10 +51,12 @@ export const TextGenerationSection: React.FC = () => {
     setAudioUrl(null);
 
     try {
-      const taskId = await audioService.generateSpeech(text, selectedVoice.id, temperature, topP);
+      // Start the one-shot generation task
+      const taskId = await audioService.startOneshotGeneration(text, selectedVoice.id, temperature, topP);
       
+      // Poll for the result
       const pollStatus = async () => {
-        const { status, result_path, error } = await audioService.checkGenerationStatus(taskId);
+        const { status, result_path, error } = await audioService.checkOneshotGenerationStatus(taskId);
         if (status === 'completed' && result_path) {
           setAudioUrl(audioService.getAudioUrl(result_path));
           setIsGenerating(false);
@@ -83,12 +85,11 @@ export const TextGenerationSection: React.FC = () => {
     <Card gradient className="p-8">
       <div className="space-y-6">
         <div>
-          <h2 className="text-2xl font-semibold text-white mb-2">Text to Speech Generation</h2>
-          <p className="text-gray-400 text-sm">Enter your text, select a voice, and configure generation parameters.</p>
+          <h2 className="text-2xl font-semibold text-white mb-2">Standard Text to Speech</h2>
+          <p className="text-gray-400 text-sm">Enter text, select a voice, and configure generation parameters.</p>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-            {/* Left Column: Text & Voice */}
             <div className="space-y-4">
                 <div className="space-y-2">
                     <label htmlFor="text-input" className="block text-sm font-medium text-gray-300">Enter Your Text</label>
@@ -125,7 +126,6 @@ export const TextGenerationSection: React.FC = () => {
                 </div>
             </div>
 
-            {/* Right Column: Parameters */}
             <div className="space-y-6">
                 <ParameterSlider 
                     label="Temperature"
@@ -146,7 +146,6 @@ export const TextGenerationSection: React.FC = () => {
             </div>
         </div>
 
-        {/* Generate Button & Status */}
         <div className="pt-2">
             <Button
               variant="primary" size="lg" fullWidth

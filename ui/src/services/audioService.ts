@@ -14,7 +14,6 @@ class AudioService {
       return response.data;
     } catch (error) {
       console.error('Failed to fetch voices from API, returning fallback list.', error);
-      // Fallback in case the /voices endpoint isn't ready or fails
       return [
         { id: 'smart_voice', name: 'Smart Voice (Auto)', description: 'Model selects a suitable voice', tags: ['professional'] },
       ];
@@ -41,22 +40,48 @@ class AudioService {
     return response.data;
   }
 
-  async generateSpeech(text: string, voiceId: string, temperature: number, topP: number): Promise<string> {
+  async startOneshotGeneration(text: string, voiceId: string, temperature: number, topP: number): Promise<string> {
     const formData = new FormData();
     formData.append('text', text);
     formData.append('voice_id', voiceId);
     formData.append('temperature', String(temperature));
     formData.append('top_p', String(topP));
 
-    const response = await this.apiClient.post('/generate/speech', formData);
+    const response = await this.apiClient.post('/generate/speech/oneshot', formData);
     return response.data.task_id;
   }
-
-  async checkGenerationStatus(taskId: string): Promise<{ status: 'processing' | 'completed' | 'failed'; result_path?: string, error?: string }> {
+  
+  async checkOneshotGenerationStatus(taskId: string): Promise<{ status: 'processing' | 'completed' | 'failed'; result_path?: string, error?: string }> {
     const response = await this.apiClient.get(`/generation-status/${taskId}`);
     return response.data;
   }
 
+
+  async startProject(text: string, voiceId: string, temperature: number, topP: number): Promise<{ project_id: string }> {
+    const formData = new FormData();
+    formData.append('text', text);
+    formData.append('voice_id', voiceId);
+    formData.append('temperature', String(temperature));
+    formData.append('top_p', String(topP));
+    const response = await this.apiClient.post('/project', formData);
+    return response.data;
+  }
+
+  async getProjectStatus(projectId: string): Promise<any> {
+    const response = await this.apiClient.get(`/project/${projectId}`);
+    return response.data;
+  }
+
+  async regenerateChunk(projectId: string, chunkIndex: number): Promise<any> {
+    const response = await this.apiClient.post(`/project/${projectId}/chunk/${chunkIndex}/regenerate`);
+    return response.data;
+  }
+  
+  async stitchAudio(projectId: string): Promise<{ final_audio_filename: string }> {
+    const response = await this.apiClient.post(`/project/${projectId}/stitch`);
+    return response.data;
+  }
+  
   getAudioUrl(filename: string): string {
     return `${API_CONFIG.BASE_URL}/audio/${filename}`;
   }
