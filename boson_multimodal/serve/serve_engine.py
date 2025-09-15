@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import torch
+import time
 import numpy as np
 from io import BytesIO
 from dataclasses import dataclass
@@ -189,28 +190,24 @@ class HiggsAudioServeEngine:
         kv_cache_lengths: List[int] = [1024, 4096, 8192, 16384],
     ):
         """
-        Initialize the HiggsAudioServeEngine, a serving wrapper for the HiggsAudioModel.
-        The model, tokenizer, and audio tokenizer will be downloaded from the Hugging Face Hub if they are not local.
+        Initialize the HiggsAudioServeEngine with larger KV cache and MPS compatibility.
         """
         self.device = device
         self.model_name_or_path = model_name_or_path
         self.torch_dtype = torch_dtype
 
-        # Initialize model and tokenizer
         self.model = HiggsAudioModel.from_pretrained(model_name_or_path, torch_dtype=torch_dtype).to(device)
         logger.info(f"Loaded model from {model_name_or_path} to device {self.model.device}, dtype: {self.model.dtype}")
 
         if tokenizer_name_or_path is None:
             tokenizer_name_or_path = model_name_or_path
-        logger.info(f"Loading tokenizer from {tokenizer_name_or_path}")
         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name_or_path)
 
-        # For Apple Silicon (MPS), the audio tokenizer must run on the CPU due to compatibility issues
-        # with certain operations in its quantization layers.
+        # For Apple Silicon (MPS), audio tokenizer must run on CPU for compatibility.
         audio_tokenizer_device = "cpu" if self.device == "mps" else self.device
         logger.info(f"Initializing Higgs Audio Tokenizer on device: {audio_tokenizer_device}")
         self.audio_tokenizer = load_higgs_audio_tokenizer(
-            audio_tokenizer_name_or_path, 
+            audio_tokenizer_name_or_path,
             device=audio_tokenizer_device
         )
 
@@ -218,20 +215,17 @@ class HiggsAudioServeEngine:
         self.audio_codebook_size = self.model.config.audio_codebook_size
         self.audio_tokenizer_tps = self.audio_tokenizer.tps
         self.samples_per_token = int(self.audio_tokenizer.sampling_rate // self.audio_tokenizer_tps)
-        self.hamming_window_len = 2 * self.audio_num_codebooks * self.samples_per_token
-        # Set the audio special tokens
         self.model.set_audio_special_tokens(self.tokenizer)
 
-        # Prepare KV caches for different lengths
         cache_config = deepcopy(self.model.config.text_config)
         cache_config.num_hidden_layers = self.model.config.text_config.num_hidden_layers
         if self.model.config.audio_dual_ffn_layers:
             cache_config.num_hidden_layers += len(self.model.config.audio_dual_ffn_layers)
-        # A list of KV caches for different lengths
+        
         self.kv_caches = {
             length: StaticCache(
                 config=cache_config,
-                max_batch_size=1,
+                batch_size=1, # Updated from deprecated max_batch_size
                 max_cache_len=length,
                 device=self.model.device,
                 dtype=self.model.dtype,
@@ -239,17 +233,13 @@ class HiggsAudioServeEngine:
             for length in sorted(kv_cache_lengths)
         }
 
+        whisper_processor = None
         if self.model.config.encode_whisper_embed:
             logger.info(f"Loading whisper processor")
             whisper_processor = AutoProcessor.from_pretrained(
-                "openai/whisper-large-v3-turbo",
-                trust_remote=True,
-                device=self.device,
+                "openai/whisper-large-v3-turbo", trust_remote=True, device=self.device
             )
-        else:
-            whisper_processor = None
-
-        # Reuse collator to prepare inference samples
+        
         self.collator = HiggsAudioSampleCollator(
             whisper_processor=whisper_processor,
             encode_whisper_embed=self.model.config.encode_whisper_embed,
@@ -264,7 +254,6 @@ class HiggsAudioServeEngine:
             round_to=1,
         )
 
-        # Capture CUDA graphs for each KV cache length
         if device == "cuda":
             logger.info(f"Capturing CUDA graphs for each KV cache length")
             self.model.capture_model(self.kv_caches.values())
@@ -341,23 +330,23 @@ class HiggsAudioServeEngine:
         force_audio_gen: bool = False,
         ras_win_len: Optional[int] = 7,
         ras_win_max_num_repeat: int = 2,
-        seed: Optional[int] = None,  # MODIFIED: Added seed parameter
+        seed: Optional[int] = None,
     ):
         """
-        Generate audio from a chatml sample.
+        Generate audio from a chatml sample with performance logging.
         """
-        # Default stop strings
-        if stop_strings is None:
-            stop_strings = ["<|end_of_text|>", "<|eot_id|>"]
-        if ras_win_len is not None and ras_win_len <= 0:
-            ras_win_len = None
+        if stop_strings is None: stop_strings = ["<|end_of_text|>", "<|eot_id|>"]
+        if ras_win_len is not None and ras_win_len <= 0: ras_win_len = None
 
         with torch.no_grad():
+            t0 = time.time()
             inputs = self._prepare_inputs(chat_ml_sample, force_audio_gen=force_audio_gen)
             prompt_token_ids = inputs["input_ids"][0].cpu().numpy()
-
             self._prepare_kv_caches()
+            t1 = time.time()
+            logger.info(f"PERF: Data preparation (_prepare_inputs) took {t1 - t0:.2f} seconds.")
 
+            t2 = time.time()
             outputs = self.model.generate(
                 **inputs,
                 max_new_tokens=max_new_tokens,
@@ -373,42 +362,37 @@ class HiggsAudioServeEngine:
                 ras_win_max_num_repeat=ras_win_max_num_repeat,
                 seed=seed,
             )
+            t3 = time.time()
+            logger.info(f"PERF: Core model generation (self.model.generate) took {t3 - t2:.2f} seconds.")
 
-            if len(outputs[1]) > 0:
+            t4 = time.time()
+            wv_numpy = None
+            if outputs[1] and len(outputs[1]) > 0:
                 wv_list = []
                 for output_audio in outputs[1]:
                     vq_code = revert_delay_pattern(output_audio).clip(0, self.audio_codebook_size - 1)[:, 1:-1]
-                    wv_numpy = self.audio_tokenizer.decode(vq_code.unsqueeze(0))[0, 0]
-                    wv_list.append(wv_numpy)
+                    wv_numpy_chunk = self.audio_tokenizer.decode(vq_code.unsqueeze(0))[0, 0]
+                    wv_list.append(wv_numpy_chunk)
                 wv_numpy = np.concatenate(wv_list)
-            else:
-                wv_numpy = None
-
-            # We only support one request at a time now
-            generated_text_tokens = outputs[0][0].cpu().numpy()[len(prompt_token_ids) :]
+            t5 = time.time()
+            logger.info(f"PERF: Final audio decoding took {t5 - t4:.2f} seconds.")
+            
+            generated_text_tokens = outputs[0][0].cpu().numpy()[len(prompt_token_ids):]
             generated_text = self.tokenizer.decode(generated_text_tokens)
             
-            # Check if audio tokens were generated before trying to access index 0
-            generated_audio_tokens_np = None
+            generated_audio_tokens_np, completion_audio_tokens = None, 0
             if outputs[1] and len(outputs[1]) > 0:
                 generated_audio_tokens_np = outputs[1][0].cpu().numpy()
                 completion_audio_tokens = generated_audio_tokens_np.shape[1]
-            else:
-                completion_audio_tokens = 0
                 
             return HiggsAudioResponse(
-                audio=wv_numpy,
-                generated_audio_tokens=generated_audio_tokens_np,
+                audio=wv_numpy, generated_audio_tokens=generated_audio_tokens_np,
                 sampling_rate=self.audio_tokenizer.sampling_rate,
-                generated_text=generated_text,
-                generated_text_tokens=generated_text_tokens,
+                generated_text=generated_text, generated_text_tokens=generated_text_tokens,
                 usage={
                     "prompt_tokens": prompt_token_ids.shape[0],
                     "completion_tokens": generated_text_tokens.shape[0] + completion_audio_tokens,
-                    "total_tokens": (
-                        prompt_token_ids.shape[0] + generated_text_tokens.shape[0] + completion_audio_tokens
-                    ),
-                    "cached_tokens": 0,
+                    "total_tokens": (prompt_token_ids.shape[0] + generated_text_tokens.shape[0] + completion_audio_tokens),
                 },
             )
 
