@@ -6,7 +6,7 @@ import { Card } from '../ui/Card';
 import { Button } from '../ui/Button';
 import { Spinner } from '../ui/Spinner';
 import { ProgressBar } from '../ui/ProgressBar';
-import { IconPlay, IconRefreshCw, IconDownload, IconX, IconInfo, IconSave } from '../../icons';
+import { IconRefreshCw, IconDownload, IconX, IconInfo, IconSave } from '../../icons';
 
 interface Project {
   id: string;
@@ -51,11 +51,10 @@ interface ChunkItemProps {
 export const SafeTtsSection: React.FC = () => {
     const { 
         safeText, setSafeText, 
-        safeSelectedVoice, setSafeSelectedVoice, 
+        safeSelectedVoice, 
         temperature, topP,
         setShowTtsGuide,
     } = useAudioContext();
-    const { voices, isLoadingVoices } = useVoices();
     const [project, setProject] = useState<Project | null>(null);
     const [isProcessing, setIsProcessing] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -307,11 +306,11 @@ const ProjectView: React.FC<ProjectViewProps> = ({ project, onRegenerate, onStit
                 {hasProgress && (
                     <div className="space-y-2">
                         <ProgressBar 
-                            progress={project.progress_percent} 
+                            progress={project.progress_percent || 0} 
                             variant={project.status === 'failed' ? 'error' : 'default'} 
                         />
                         <p className="text-xs text-gray-500">
-                            Progress: {project.progress_percent}%
+                            Progress: {project.progress_percent || 0}%
                         </p>
                     </div>
                 )}

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { AudioProvider } from './context/AudioContext';
 import { Header } from './components/Header/Header';
 import { VoiceCloneSection } from './components/VoiceCloneSection/VoiceCloneSection';

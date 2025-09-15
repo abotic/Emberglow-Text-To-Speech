@@ -49,28 +49,11 @@ app = FastAPI(title="Higgs Audio Generation API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # Allow all origins for public deployment
+    allow_origins=["*"], # TODO sort CORS rules this before going on production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# --- Serve the React UI ---
-app.mount("/assets", StaticFiles(directory="ui/dist/assets"), name="assets")
-
-@app.get("/{full_path:path}")
-async def serve_react_app(full_path: str):
-    """
-    Serve the React application for any non-API route.
-    This is the catch-all that serves your index.html.
-    """
-    # Check if the path looks like an API call
-    api_prefixes = ["/project", "/generate", "/voices", "/audio", "/saved-audio"]
-    if any(full_path.startswith(prefix) for prefix in api_prefixes):
-        return Response(status_code=404)
-        
-    return FileResponse("ui/dist/index.html")
-# --- End UI Serving ---
 
 # --- Model Initialization with Auto Device Detection ---
 print("Initializing HiggsAudioServeEngine...")
@@ -83,6 +66,10 @@ else:
     device = "cpu"
 
 print(f"Auto-detected device: {device}")
+
+# Enable TF32 for CUDA for a good speed/precision balance on Ampere+ GPUs
+if device == "cuda":
+    torch.backends.cudnn.allow_tf32 = True
 
 serve_engine = HiggsAudioServeEngine(
     "bosonai/higgs-audio-v2-generation-3B-base",
@@ -199,7 +186,6 @@ def process_project_generation(project_id: str):
     finally:
         print(f"Generation for {project_id} finished with status: {project['status']}")
 
-
 def stitch_project_audio_internal(project_id: str) -> str:
     project = projects.get(project_id)
     if not project: raise ValueError("Project not found")
@@ -212,6 +198,7 @@ def stitch_project_audio_internal(project_id: str) -> str:
 
 
 # --- API Endpoints ---
+
 @app.post("/project", status_code=202, tags=["Project"])
 async def create_project(
     background_tasks: BackgroundTasks, text: str = Form(...), voice_id: str = Form(...),
@@ -363,6 +350,24 @@ async def delete_saved_audio(saved_id: str):
     del saved_audio[saved_id]
     save_audio_metadata()
     return {"message": "Audio deleted successfully"}
+
+@app.get("/audio/{filename}", tags=["Audio"])
+async def get_audio_file(filename: str):
+    for directory in [STORAGE_DIR, SAVED_AUDIO_DIR]:
+        path = os.path.join(directory, filename)
+        if os.path.exists(path): return FileResponse(path, media_type="audio/wav")
+    raise HTTPException(status_code=404, detail="File not found")
+
+# --- Serve the React UI (MUST be defined LAST) ---
+app.mount("/assets", StaticFiles(directory="ui/dist/assets"), name="assets")
+
+@app.get("/{full_path:path}")
+async def serve_react_app(full_path: str):
+    """
+    Serve the React application for any non-API route.
+    This is the catch-all that serves your index.html.
+    """
+    return FileResponse("ui/dist/index.html")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

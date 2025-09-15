@@ -97,9 +97,10 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   const [showSaveModal, setShowSaveModal] = useState(false);
   const [audioToSave, setAudioToSave] = useState<{ filename: string; type: 'standard' | 'project' } | null>(null);
   
-  // Voice refresh trigger
-  const [voiceListVersion, setVoiceListVersion] = useState(0);
-  const refreshVoices = () => setVoiceListVersion(v => v + 1);
+  // Voice refresh trigger (using a simple callback instead of state)
+  // TODO I don't like this, find a better way before going to production
+  const refreshVoices = () => {
+  };
 
   return (
     <AudioContext.Provider

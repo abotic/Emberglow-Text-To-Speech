@@ -3,13 +3,12 @@ import { audioService, SavedAudio } from '../../services/audioService';
 import { Card } from '../ui/Card';
 import { Button } from '../ui/Button';
 import { Spinner } from '../ui/Spinner';
-import { IconPlay, IconDownload, IconX, IconMusic } from '../../icons';
+import { IconDownload, IconX, IconMusic } from '../../icons';
 
 export const SavedAudioSection: React.FC = () => {
   const [savedAudio, setSavedAudio] = useState<SavedAudio[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [playingAudio, setPlayingAudio] = useState<string | null>(null);
 
   const loadSavedAudio = async () => {
     try {
@@ -135,8 +134,6 @@ export const SavedAudioSection: React.FC = () => {
                   src={audioService.getAudioUrl(audio.filename)}
                   className="w-full"
                   style={{ height: '40px' }}
-                  onPlay={() => setPlayingAudio(audio.id)}
-                  onPause={() => setPlayingAudio(null)}
                 />
 
                 <div className="flex gap-2">
