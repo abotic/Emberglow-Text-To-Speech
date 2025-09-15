@@ -186,25 +186,11 @@ class HiggsAudioServeEngine:
         tokenizer_name_or_path: Optional[str] = None,
         device: str = "cuda",
         torch_dtype: Union[torch.dtype, str] = "auto",
-        kv_cache_lengths: List[int] = [1024, 4096, 8192],  # Multiple KV cache sizes
+        kv_cache_lengths: List[int] = [1024, 4096, 8192, 16384],
     ):
         """
         Initialize the HiggsAudioServeEngine, a serving wrapper for the HiggsAudioModel.
         The model, tokenizer, and audio tokenizer will be downloaded from the Hugging Face Hub if they are not local.
-
-        Args:
-            model_name_or_path (str):
-                The name or path of the model to load.
-            audio_tokenizer_name_or_path (str):
-                The name or path of the audio tokenizer to load.
-            tokenizer_name_or_path (str):
-                The name or path of the tokenizer to load.
-            device (str):
-                The device to use for the model.
-            kv_cache_lengths (List[int]):
-                The lengths of the KV caches to use for the model. Used for cuda graph capture when device is cuda.
-            torch_dtype (Union[torch.dtype, str]):
-                The dtype to use for the model.
         """
         self.device = device
         self.model_name_or_path = model_name_or_path
@@ -212,15 +198,21 @@ class HiggsAudioServeEngine:
 
         # Initialize model and tokenizer
         self.model = HiggsAudioModel.from_pretrained(model_name_or_path, torch_dtype=torch_dtype).to(device)
-        logger.info(f"Loaded model from {model_name_or_path}, dtype: {self.model.dtype}")
+        logger.info(f"Loaded model from {model_name_or_path} to device {self.model.device}, dtype: {self.model.dtype}")
 
         if tokenizer_name_or_path is None:
             tokenizer_name_or_path = model_name_or_path
         logger.info(f"Loading tokenizer from {tokenizer_name_or_path}")
         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name_or_path)
 
-        logger.info(f"Initializing Higgs Audio Tokenizer")
-        self.audio_tokenizer = load_higgs_audio_tokenizer(audio_tokenizer_name_or_path, device=device)
+        # For Apple Silicon (MPS), the audio tokenizer must run on the CPU due to compatibility issues
+        # with certain operations in its quantization layers.
+        audio_tokenizer_device = "cpu" if self.device == "mps" else self.device
+        logger.info(f"Initializing Higgs Audio Tokenizer on device: {audio_tokenizer_device}")
+        self.audio_tokenizer = load_higgs_audio_tokenizer(
+            audio_tokenizer_name_or_path, 
+            device=audio_tokenizer_device
+        )
 
         self.audio_num_codebooks = self.model.config.audio_num_codebooks
         self.audio_codebook_size = self.model.config.audio_codebook_size
@@ -349,23 +341,10 @@ class HiggsAudioServeEngine:
         force_audio_gen: bool = False,
         ras_win_len: Optional[int] = 7,
         ras_win_max_num_repeat: int = 2,
-        seed: Optional[int] = None,
+        seed: Optional[int] = None,  # MODIFIED: Added seed parameter
     ):
         """
         Generate audio from a chatml sample.
-        Args:
-            chat_ml_sample: A chatml sample.
-            max_new_tokens: The maximum number of new tokens to generate.
-            temperature: The temperature to use for the generation.
-            top_p: The top p to use for the generation.
-            stop_strings: A list of strings to stop the generation.
-            force_audio_gen: Whether to force audio generation. This ensures the model generates audio tokens rather than text tokens.
-            ras_win_len: The length of the RAS window. We use 7 by default. You can disable it by setting it to None or <=0.
-            ras_win_max_num_repeat: The maximum number of times to repeat the RAS window.
-        Returns:
-            A dictionary with the following keys:
-                audio: The generated audio.
-                sampling_rate: The sampling rate of the generated audio.
         """
         # Default stop strings
         if stop_strings is None:
@@ -408,18 +387,26 @@ class HiggsAudioServeEngine:
             # We only support one request at a time now
             generated_text_tokens = outputs[0][0].cpu().numpy()[len(prompt_token_ids) :]
             generated_text = self.tokenizer.decode(generated_text_tokens)
-            generated_audio_tokens = outputs[1][0].cpu().numpy()
+            
+            # Check if audio tokens were generated before trying to access index 0
+            generated_audio_tokens_np = None
+            if outputs[1] and len(outputs[1]) > 0:
+                generated_audio_tokens_np = outputs[1][0].cpu().numpy()
+                completion_audio_tokens = generated_audio_tokens_np.shape[1]
+            else:
+                completion_audio_tokens = 0
+                
             return HiggsAudioResponse(
                 audio=wv_numpy,
-                generated_audio_tokens=generated_audio_tokens,
+                generated_audio_tokens=generated_audio_tokens_np,
                 sampling_rate=self.audio_tokenizer.sampling_rate,
                 generated_text=generated_text,
                 generated_text_tokens=generated_text_tokens,
                 usage={
                     "prompt_tokens": prompt_token_ids.shape[0],
-                    "completion_tokens": generated_text_tokens.shape[0] + generated_audio_tokens.shape[1],
+                    "completion_tokens": generated_text_tokens.shape[0] + completion_audio_tokens,
                     "total_tokens": (
-                        prompt_token_ids.shape[0] + generated_text_tokens.shape[0] + generated_audio_tokens.shape[1]
+                        prompt_token_ids.shape[0] + generated_text_tokens.shape[0] + completion_audio_tokens
                     ),
                     "cached_tokens": 0,
                 },
