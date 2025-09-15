@@ -5,6 +5,9 @@ import { VoiceCloneSection } from './components/VoiceCloneSection/VoiceCloneSect
 import { TextGenerationSection } from './components/TextGenerationSection/TextGenerationSection';
 import { AudioPlayer } from './components/AudioPlayer/AudioPlayer';
 import { SafeTtsSection } from './components/SafeTtsSection/SafeTts';
+import { SavedAudioSection } from './components/SavedAudioSection/SavedAudioSection';
+import { TtsGuideModal } from './components/TtsGuideModal/TtsGuideModal';
+import { AudioSaveModal } from './components/AudioSaveModal/AudioSaveModal';
 
 function App() {
   const [activeTab, setActiveTab] = useState('generate');
@@ -24,6 +27,7 @@ function App() {
           <div className="max-w-4xl mx-auto space-y-8">
             <Header />
 
+            {/* Tab Navigation */}
             <div className="flex justify-center p-1 bg-gray-800/50 rounded-lg backdrop-blur-sm border border-gray-700">
                 <button 
                     onClick={() => setActiveTab('generate')}
@@ -35,14 +39,28 @@ function App() {
                     onClick={() => setActiveTab('safe')}
                     className={`${tabStyles} ${activeTab === 'safe' ? activeTabStyles : inactiveTabStyles}`}
                 >
-                    Safe Long-Form (Projects)
+                    Safe Long-Form
+                </button>
+                <button 
+                    onClick={() => setActiveTab('saved')}
+                    className={`${tabStyles} ${activeTab === 'saved' ? activeTabStyles : inactiveTabStyles}`}
+                >
+                    Saved Audio
                 </button>
             </div>
 
+            {/* Tab Content */}
             {activeTab === 'generate' && (
                 <>
                     <VoiceCloneSection />
-                    <div className="relative"><div className="absolute inset-0 flex items-center"><div className="w-full border-t border-gray-800"></div></div><div className="relative flex justify-center text-sm"><span className="px-4 bg-gray-900 text-gray-500">AND</span></div></div>
+                    <div className="relative">
+                      <div className="absolute inset-0 flex items-center">
+                        <div className="w-full border-t border-gray-800"></div>
+                      </div>
+                      <div className="relative flex justify-center text-sm">
+                        <span className="px-4 bg-gray-900 text-gray-500">OR</span>
+                      </div>
+                    </div>
                     <TextGenerationSection />
                     <AudioPlayer />
                 </>
@@ -51,6 +69,14 @@ function App() {
             {activeTab === 'safe' && (
                 <SafeTtsSection />
             )}
+
+            {activeTab === 'saved' && (
+                <SavedAudioSection />
+            )}
+
+            {/* Modals */}
+            <TtsGuideModal />
+            <AudioSaveModal />
 
           </div>
         </div>

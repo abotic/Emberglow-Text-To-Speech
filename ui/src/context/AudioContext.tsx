@@ -2,22 +2,33 @@ import React, { createContext, useContext, useState, ReactNode } from 'react';
 import { Voice } from '../types';
 
 interface AudioContextType {
-  // Text generation state
-  text: string;
-  setText: (text: string) => void;
-  selectedVoice: Voice | null;
-  setSelectedVoice: (voice: Voice | null) => void;
+  // Standard TTS state (separate from Safe TTS)
+  standardText: string;
+  setStandardText: (text: string) => void;
+  standardSelectedVoice: Voice | null;
+  setStandardSelectedVoice: (voice: Voice | null) => void;
+  
+  // Safe TTS state (separate from Standard TTS)
+  safeText: string;
+  setSafeText: (text: string) => void;
+  safeSelectedVoice: Voice | null;
+  setSafeSelectedVoice: (voice: Voice | null) => void;
+  
+  // Shared generation parameters
   temperature: number;
   setTemperature: (temp: number) => void;
   topP: number;
   setTopP: (topP: number) => void;
   
+  // Standard TTS generation state
   audioUrl: string | null;
   setAudioUrl: (url: string | null) => void;
   isGenerating: boolean;
   setIsGenerating: (loading: boolean) => void;
   generationError: string | null;
   setGenerationError: (error: string | null) => void;
+  currentTask: any;
+  setCurrentTask: (task: any) => void;
   
   // Voice cloning state
   voiceToClone: File | null;
@@ -35,6 +46,16 @@ interface AudioContextType {
   testAudioUrl: string | null;
   setTestAudioUrl: (url: string | null) => void;
 
+  // TTS Guide Modal
+  showTtsGuide: boolean;
+  setShowTtsGuide: (show: boolean) => void;
+
+  // Audio Saving
+  showSaveModal: boolean;
+  setShowSaveModal: (show: boolean) => void;
+  audioToSave: { filename: string; type: 'standard' | 'project' } | null;
+  setAudioToSave: (audio: { filename: string; type: 'standard' | 'project' } | null) => void;
+
   // Global voice list refresh trigger
   refreshVoices: () => void;
 }
@@ -42,36 +63,57 @@ interface AudioContextType {
 const AudioContext = createContext<AudioContextType | undefined>(undefined);
 
 export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const [text, setText] = useState('');
-  const [selectedVoice, setSelectedVoice] = useState<Voice | null>(null);
+  // Standard TTS state
+  const [standardText, setStandardText] = useState('');
+  const [standardSelectedVoice, setStandardSelectedVoice] = useState<Voice | null>(null);
+  
+  // Safe TTS state
+  const [safeText, setSafeText] = useState('');
+  const [safeSelectedVoice, setSafeSelectedVoice] = useState<Voice | null>(null);
+  
+  // Shared parameters
   const [temperature, setTemperature] = useState(0.3);
   const [topP, setTopP] = useState(0.95);
+  
+  // Standard generation state
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationError, setGenerationError] = useState<string | null>(null);
+  const [currentTask, setCurrentTask] = useState<any>(null);
   
+  // Voice cloning state
   const [voiceToClone, setVoiceToClone] = useState<File | null>(null);
   const [clonedVoiceName, setClonedVoiceName] = useState('');
-  const [isCloning, setIsCloning] = useState(false); // For saving
-  const [isTestingVoice, setIsTestingVoice] = useState(false); // For testing
+  const [isCloning, setIsCloning] = useState(false);
+  const [isTestingVoice, setIsTestingVoice] = useState(false);
   const [cloningError, setCloningError] = useState<string | null>(null);
   const [cloningSuccess, setCloningSuccess] = useState<string | null>(null);
   const [testAudioUrl, setTestAudioUrl] = useState<string | null>(null);
   
-  // This state is used as a simple event bus to trigger a refresh in the useVoices hook
+  // TTS Guide Modal
+  const [showTtsGuide, setShowTtsGuide] = useState(false);
+
+  // Audio Saving
+  const [showSaveModal, setShowSaveModal] = useState(false);
+  const [audioToSave, setAudioToSave] = useState<{ filename: string; type: 'standard' | 'project' } | null>(null);
+  
+  // Voice refresh trigger
   const [voiceListVersion, setVoiceListVersion] = useState(0);
   const refreshVoices = () => setVoiceListVersion(v => v + 1);
 
   return (
     <AudioContext.Provider
       value={{
-        text, setText,
-        selectedVoice, setSelectedVoice,
+        standardText, setStandardText,
+        standardSelectedVoice, setStandardSelectedVoice,
+        safeText, setSafeText,
+        safeSelectedVoice, setSafeSelectedVoice,
         temperature, setTemperature,
         topP, setTopP,
         audioUrl, setAudioUrl,
         isGenerating, setIsGenerating,
         generationError, setGenerationError,
+        currentTask, setCurrentTask,
         voiceToClone, setVoiceToClone,
         clonedVoiceName, setClonedVoiceName,
         isCloning, setIsCloning,
@@ -79,6 +121,9 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         cloningSuccess, setCloningSuccess,
         isTestingVoice, setIsTestingVoice,
         testAudioUrl, setTestAudioUrl,
+        showTtsGuide, setShowTtsGuide,
+        showSaveModal, setShowSaveModal,
+        audioToSave, setAudioToSave,
         refreshVoices,
       }}
     >
