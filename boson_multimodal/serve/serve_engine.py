@@ -16,7 +16,6 @@ from loguru import logger
 import threading
 import librosa
 
-
 from ..dataset.chatml_dataset import ChatMLSample, ChatMLDatasetSample, prepare_chatml_sample
 from ..model.higgs_audio import HiggsAudioModel
 from ..model.higgs_audio.utils import revert_delay_pattern
@@ -27,7 +26,6 @@ from ..audio_processing.higgs_audio_tokenizer import load_higgs_audio_tokenizer
 @dataclass
 class HiggsAudioStreamerDelta:
     """Represents a chunk of generated content, either text or audio tokens."""
-
     text: Optional[str] = None
     text_tokens: Optional[torch.Tensor] = None
     audio_tokens: Optional[torch.Tensor] = None
@@ -38,42 +36,8 @@ class AsyncHiggsAudioStreamer(BaseStreamer):
     """
     Async streamer that handles both text and audio token generation from Higgs-Audio model.
     Stores chunks in a queue to be consumed by downstream applications.
-
-    Parameters:
-        tokenizer (`AutoTokenizer`):
-            The tokenizer used to decode text tokens.
-        skip_prompt (`bool`, *optional*, defaults to `False`):
-            Whether to skip the prompt tokens in generation.
-        timeout (`float`, *optional*):
-            The timeout for the queue. If `None`, the queue will block indefinitely.
-        decode_kwargs (`dict`, *optional*):
-            Additional keyword arguments to pass to the tokenizer's `decode` method.
-
-    Examples:
-        ```python
-        >>> from transformers import AutoTokenizer
-        >>> from threading import Thread
-        >>> import asyncio
-
-        >>> tokenizer = AutoTokenizer.from_pretrained("path/to/higgs/tokenizer")
-        >>> model = HiggsAudioModel.from_pretrained("path/to/higgs/model")
-        >>> inputs = tokenizer(["Generate some text and audio:"], return_tensors="pt")
-
-        >>> async def main():
-        ...     streamer = AsyncHiggsAudioStreamer(tokenizer)
-        ...     generation_kwargs = dict(inputs, streamer=streamer, max_new_tokens=20)
-        ...     thread = Thread(target=model.generate, kwargs=generation_kwargs)
-        ...     thread.start()
-        ...
-        ...     async for delta in streamer:
-        ...         if delta.text is not None:
-        ...             print("Text:", delta.text)
-        ...         if delta.audio_tokens is not None:
-        ...             print("Audio tokens shape:", delta.audio_tokens.shape)
-        >>> asyncio.run(main())
-        ```
     """
-
+    
     def __init__(
         self,
         tokenizer: "AutoTokenizer",
@@ -87,37 +51,27 @@ class AsyncHiggsAudioStreamer(BaseStreamer):
         self.timeout = timeout
         self.decode_kwargs = decode_kwargs
         self.audio_num_codebooks = audio_num_codebooks
-        # Queue to store generated chunks
         self.queue = asyncio.Queue()
         self.stop_signal = None
-
-        # Get running event loop
         self.loop = asyncio.get_running_loop()
         self.has_asyncio_timeout = hasattr(asyncio, "timeout")
-
-        # State tracking
         self.next_tokens_are_prompt = True
 
     def put(self, value: torch.Tensor):
         """
         Receives tokens and processes them as either text or audio tokens.
-        For text tokens, decodes and caches them until complete words are formed.
-        For audio tokens, directly queues them.
         """
         if value.shape[0] > 1 and not self.next_tokens_are_prompt:
-            # This is likely audio tokens (shape: [audio_num_codebooks])
             assert value.shape[0] == self.audio_num_codebooks, "Number of codebooks mismatch"
             delta = HiggsAudioStreamerDelta(audio_tokens=value)
             if self.loop.is_running():
                 self.loop.call_soon_threadsafe(self.queue.put_nowait, delta)
             return
 
-        # Skip prompt tokens if configured
         if self.skip_prompt and self.next_tokens_are_prompt:
             self.next_tokens_are_prompt = False
             return
 
-        # Process as text tokens
         if len(value.shape) > 1:
             value = value[0]
 
@@ -154,11 +108,8 @@ class AsyncHiggsAudioStreamer(BaseStreamer):
 class AsyncStoppingCriteria(StoppingCriteria):
     """
     Stopping criteria that checks for stop signal from a threading event.
-
-    Args:
-        stop_signal (threading.Event): Event that will receive stop signals
     """
-
+    
     def __init__(self, stop_signal: threading.Event):
         self.stop_signal = stop_signal
 
@@ -187,23 +138,34 @@ class HiggsAudioServeEngine:
         tokenizer_name_or_path: Optional[str] = None,
         device: str = "cuda",
         torch_dtype: Union[torch.dtype, str] = "auto",
-        kv_cache_lengths: List[int] = [1024, 4096, 8192, 16384],
+        kv_cache_lengths: List[int] = [1024, 4096, 8192],
     ):
         """
-        Initialize the HiggsAudioServeEngine with larger KV cache and MPS compatibility.
+        Initialize the HiggsAudioServeEngine with all necessary attributes.
         """
         self.device = device
         self.model_name_or_path = model_name_or_path
         self.torch_dtype = torch_dtype
 
-        self.model = HiggsAudioModel.from_pretrained(model_name_or_path, torch_dtype=torch_dtype).to(device)
+        # Enable CUDA optimizations for RTX 4090
+        if device == "cuda":
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            torch.backends.cudnn.benchmark = True
+            torch.set_float32_matmul_precision('high')
+            logger.info("CUDA optimizations enabled: TF32, cuDNN benchmark")
+
+        self.model = HiggsAudioModel.from_pretrained(
+            model_name_or_path,
+            torch_dtype=torch_dtype
+        ).to(device)
         logger.info(f"Loaded model from {model_name_or_path} to device {self.model.device}, dtype: {self.model.dtype}")
 
         if tokenizer_name_or_path is None:
             tokenizer_name_or_path = model_name_or_path
         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name_or_path)
 
-        # For Apple Silicon (MPS), audio tokenizer must run on CPU for compatibility.
+        # Audio tokenizer on appropriate device
         audio_tokenizer_device = "cpu" if self.device == "mps" else self.device
         logger.info(f"Initializing Higgs Audio Tokenizer on device: {audio_tokenizer_device}")
         self.audio_tokenizer = load_higgs_audio_tokenizer(
@@ -215,17 +177,21 @@ class HiggsAudioServeEngine:
         self.audio_codebook_size = self.model.config.audio_codebook_size
         self.audio_tokenizer_tps = self.audio_tokenizer.tps
         self.samples_per_token = int(self.audio_tokenizer.sampling_rate // self.audio_tokenizer_tps)
+        self.hamming_window_len = 2 * self.audio_num_codebooks * self.samples_per_token
+
         self.model.set_audio_special_tokens(self.tokenizer)
 
+        # Configure cache properly
         cache_config = deepcopy(self.model.config.text_config)
         cache_config.num_hidden_layers = self.model.config.text_config.num_hidden_layers
         if self.model.config.audio_dual_ffn_layers:
             cache_config.num_hidden_layers += len(self.model.config.audio_dual_ffn_layers)
-        
+
+        # CRITICAL FIX: Use max_batch_size instead of batch_size
         self.kv_caches = {
             length: StaticCache(
                 config=cache_config,
-                batch_size=1, # Updated from deprecated max_batch_size
+                max_batch_size=1,  # ✅ Fixed parameter name
                 max_cache_len=length,
                 device=self.model.device,
                 dtype=self.model.dtype,
@@ -237,9 +203,11 @@ class HiggsAudioServeEngine:
         if self.model.config.encode_whisper_embed:
             logger.info(f"Loading whisper processor")
             whisper_processor = AutoProcessor.from_pretrained(
-                "openai/whisper-large-v3-turbo", trust_remote=True, device=self.device
+                "openai/whisper-large-v3-turbo", 
+                trust_remote=True, 
+                device=self.device
             )
-        
+
         self.collator = HiggsAudioSampleCollator(
             whisper_processor=whisper_processor,
             encode_whisper_embed=self.model.config.encode_whisper_embed,
@@ -254,9 +222,16 @@ class HiggsAudioServeEngine:
             round_to=1,
         )
 
+        # Capture CUDA graphs for performance
         if device == "cuda":
             logger.info(f"Capturing CUDA graphs for each KV cache length")
             self.model.capture_model(self.kv_caches.values())
+            logger.info(f"CUDA graphs captured successfully")
+
+        # Diagnostic logging
+        logger.info(f"Model device: {self.model.device}")
+        logger.info(f"Audio tokenizer device: {self.audio_tokenizer.device}")
+        logger.info(f"Number of KV caches: {len(self.kv_caches)}")
 
     def _prepare_inputs(self, chat_ml_sample: ChatMLSample, force_audio_gen: bool = False):
         input_tokens, _, audio_contents, _ = prepare_chatml_sample(
@@ -277,7 +252,8 @@ class HiggsAudioServeEngine:
                 raw_audio, _ = librosa.load(audio_content.audio_url, sr=self.audio_tokenizer.sampling_rate)
             elif audio_content.raw_audio is not None:
                 raw_audio, _ = librosa.load(
-                    BytesIO(base64.b64decode(audio_content.raw_audio)), sr=self.audio_tokenizer.sampling_rate
+                    BytesIO(base64.b64decode(audio_content.raw_audio)), 
+                    sr=self.audio_tokenizer.sampling_rate
                 )
             else:
                 raw_audio = None
@@ -335,8 +311,10 @@ class HiggsAudioServeEngine:
         """
         Generate audio from a chatml sample with performance logging.
         """
-        if stop_strings is None: stop_strings = ["<|end_of_text|>", "<|eot_id|>"]
-        if ras_win_len is not None and ras_win_len <= 0: ras_win_len = None
+        if stop_strings is None:
+            stop_strings = ["<|end_of_text|>", "<|eot_id|>"]
+        if ras_win_len is not None and ras_win_len <= 0:
+            ras_win_len = None
 
         with torch.no_grad():
             t0 = time.time()
@@ -344,7 +322,7 @@ class HiggsAudioServeEngine:
             prompt_token_ids = inputs["input_ids"][0].cpu().numpy()
             self._prepare_kv_caches()
             t1 = time.time()
-            logger.info(f"PERF: Data preparation (_prepare_inputs) took {t1 - t0:.2f} seconds.")
+            logger.info(f"PERF: Data preparation took {t1 - t0:.2f} seconds")
 
             t2 = time.time()
             outputs = self.model.generate(
@@ -363,7 +341,7 @@ class HiggsAudioServeEngine:
                 seed=seed,
             )
             t3 = time.time()
-            logger.info(f"PERF: Core model generation (self.model.generate) took {t3 - t2:.2f} seconds.")
+            logger.info(f"PERF: Model generation took {t3 - t2:.2f} seconds")
 
             t4 = time.time()
             wv_numpy = None
@@ -375,20 +353,23 @@ class HiggsAudioServeEngine:
                     wv_list.append(wv_numpy_chunk)
                 wv_numpy = np.concatenate(wv_list)
             t5 = time.time()
-            logger.info(f"PERF: Final audio decoding took {t5 - t4:.2f} seconds.")
-            
+            logger.info(f"PERF: Audio decoding took {t5 - t4:.2f} seconds")
+            logger.info(f"PERF: Total generation time: {t5 - t0:.2f} seconds")
+
             generated_text_tokens = outputs[0][0].cpu().numpy()[len(prompt_token_ids):]
             generated_text = self.tokenizer.decode(generated_text_tokens)
-            
+
             generated_audio_tokens_np, completion_audio_tokens = None, 0
             if outputs[1] and len(outputs[1]) > 0:
                 generated_audio_tokens_np = outputs[1][0].cpu().numpy()
                 completion_audio_tokens = generated_audio_tokens_np.shape[1]
-                
+
             return HiggsAudioResponse(
-                audio=wv_numpy, generated_audio_tokens=generated_audio_tokens_np,
+                audio=wv_numpy,
+                generated_audio_tokens=generated_audio_tokens_np,
                 sampling_rate=self.audio_tokenizer.sampling_rate,
-                generated_text=generated_text, generated_text_tokens=generated_text_tokens,
+                generated_text=generated_text,
+                generated_text_tokens=generated_text_tokens,
                 usage={
                     "prompt_tokens": prompt_token_ids.shape[0],
                     "completion_tokens": generated_text_tokens.shape[0] + completion_audio_tokens,
@@ -411,19 +392,7 @@ class HiggsAudioServeEngine:
     ):
         """
         Generate audio from a chatml sample.
-        Args:
-            chat_ml_sample: A chatml sample.
-            max_new_tokens: The maximum number of new tokens to generate.
-            temperature: The temperature to use for the generation.
-            top_p: The top p to use for the generation.
-            stop_strings: A list of strings to stop the generation.
-            force_audio_gen: Whether to force audio generation. This ensures the model generates audio tokens rather than text tokens.
-            ras_win_len: The length of the RAS window. We use 7 by default. You can disable it by setting it to None or <=0.
-            ras_win_max_num_repeat: The maximum number of times to repeat the RAS window.
-        Returns:
-             Delta AsyncGenerator
         """
-        # Default stop strings
         if stop_strings is None:
             stop_strings = ["<|end_of_text|>", "<|eot_id|>"]
         if ras_win_len is not None and ras_win_len <= 0:
@@ -431,7 +400,6 @@ class HiggsAudioServeEngine:
 
         with torch.no_grad():
             inputs = self._prepare_inputs(chat_ml_sample, force_audio_gen=force_audio_gen)
-
             self._prepare_kv_caches()
 
             streamer = AsyncHiggsAudioStreamer(

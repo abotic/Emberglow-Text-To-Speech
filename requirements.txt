@@ -1,3 +1,4 @@
+# Core Higgs Audio dependencies
 descript-audio-codec
 torch
 transformers>=4.45.1,<4.47.0
@@ -19,3 +20,9 @@ click
 langid
 jieba
 accelerate>=0.26.0
+
+# --- Server dependencies ---
+fastapi
+uvicorn[standard]
+python-multipart
+soundfile

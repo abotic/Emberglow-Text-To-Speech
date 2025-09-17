@@ -49,7 +49,7 @@ app = FastAPI(title="Higgs Audio Generation API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # TODO sort CORS rules this before going on production
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -60,6 +60,12 @@ print("Initializing HiggsAudioServeEngine...")
 
 if torch.cuda.is_available():
     device = "cuda"
+    # Enable CUDA optimizations
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.backends.cudnn.benchmark = True
+    torch.set_float32_matmul_precision('high')
+    print(f"CUDA device detected with optimizations enabled")
 elif torch.backends.mps.is_available():
     device = "mps"
 else:
@@ -67,98 +73,110 @@ else:
 
 print(f"Auto-detected device: {device}")
 
-# Enable TF32 for CUDA for a good speed/precision balance on Ampere+ GPUs
-if device == "cuda":
-    torch.backends.cudnn.allow_tf32 = True
-
 serve_engine = HiggsAudioServeEngine(
     "bosonai/higgs-audio-v2-generation-3B-base",
     "bosonai/higgs-audio-v2-tokenizer",
     device=device,
-    torch_dtype=torch.float16 if device != "cpu" else "auto"
 )
 print(f"Model loaded and running on device: {serve_engine.device}")
-
 
 # --- Helper Functions ---
 def normalize_text_for_tts(text: str) -> str:
     return re.sub(r'\s+', ' ', text).strip()
 
-def split_text_into_chunks(text: str, words_per_chunk: int = 150):
+def split_text_into_chunks(text: str, words_per_chunk: int = 100):
+    """Split text into smaller chunks for better performance"""
     sentences = re.split(r'(?<=[.?!])\s+', text)
     chunks = []
     current_chunk = ""
+    
     for sentence in sentences:
-        if len(current_chunk.split()) + len(sentence.split()) > words_per_chunk and current_chunk:
+        sentence_words = len(sentence.split())
+        current_words = len(current_chunk.split())
+        
+        if current_words + sentence_words > words_per_chunk and current_chunk:
             chunks.append(current_chunk.strip())
             current_chunk = sentence
         else:
-            current_chunk += " " + sentence
+            current_chunk = (current_chunk + " " + sentence).strip()
+    
     if current_chunk:
         chunks.append(current_chunk.strip())
+    
     return [c.strip() for c in chunks if c.strip()]
 
 def update_project_progress(project_id: str):
     project = projects.get(project_id)
-    if not project: return
+    if not project:
+        return
     completed_chunks = sum(1 for chunk in project['chunks'] if chunk['status'] == 'completed')
     total_chunks = len(project['chunks'])
     progress_percent = int((completed_chunks / total_chunks) * 100) if total_chunks > 0 else 0
     project.update({
-        'completed_chunks': completed_chunks, 'total_chunks': total_chunks, 'progress_percent': progress_percent
+        'completed_chunks': completed_chunks,
+        'total_chunks': total_chunks,
+        'progress_percent': progress_percent
     })
 
-# --- Core Generation Logic ---
+# --- Core Generation Logic (OPTIMIZED) ---
 def process_project_generation(project_id: str):
     project = projects.get(project_id)
-    if not project: return
-    print(f"Starting sequential generation for project {project_id}")
+    if not project:
+        return
+    
+    print(f"Starting optimized generation for project {project_id}")
     project['status'] = 'processing'
-
+    
+    # Build initial context only once
     context_messages = []
     if not project.get("is_smart_voice") and project.get("voice_ref_path"):
         with open(project["voice_ref_path"], "rb") as audio_file:
             audio_base64 = base64.b64encode(audio_file.read()).decode('utf-8')
-        context_messages.extend([
+        context_messages = [
             Message(role="user", content="Reference audio for voice cloning."),
             Message(role="assistant", content=AudioContent(raw_audio=audio_base64, audio_url="placeholder"))
-        ])
-
+        ]
+    
     try:
+        # Process chunks with minimal context (OPTIMIZED)
         for i, chunk in enumerate(project['chunks']):
             chunk.update({'status': 'processing', 'start_time': time.time()})
             update_project_progress(project_id)
             print(f"Generating chunk {i + 1}/{len(project['chunks'])} for project {project_id}")
             
             try:
+                # Use only reference voice + current chunk (not all previous chunks)
                 messages_for_chunk = context_messages + [Message(role="user", content=chunk['text'])]
                 chat_ml_sample = ChatMLSample(messages=messages_for_chunk)
-
+                
+                # Reduced token count for faster generation
                 estimated_text_tokens = len(chunk['text']) // 3
-                estimated_max_audio_tokens = 3000
-                dynamic_max_tokens = estimated_text_tokens + estimated_max_audio_tokens + 512
-
+                estimated_max_audio_tokens = min(2000, estimated_text_tokens * 10)
+                dynamic_max_tokens = estimated_text_tokens + estimated_max_audio_tokens + 256
+                
                 output = serve_engine.generate(
-                    chat_ml_sample=chat_ml_sample, max_new_tokens=dynamic_max_tokens,
-                    stop_strings=["<|end_of_text|>", "<|eot_id|>"], temperature=project['params']['temperature'],
-                    top_p=project['params']['top_p'], seed=42
+                    chat_ml_sample=chat_ml_sample,
+                    max_new_tokens=dynamic_max_tokens,
+                    stop_strings=["<|end_of_text|>", "<|eot_id|>"],
+                    temperature=project['params']['temperature'],
+                    top_p=project['params']['top_p'],
+                    seed=42
                 )
-
-                if output.audio is None or len(output.audio) == 0: raise ValueError("Model produced no audio.")
-
+                
+                if output.audio is None or len(output.audio) == 0:
+                    raise ValueError("Model produced no audio.")
+                
                 chunk_filename = f"{project_id}_chunk_{i}.wav"
                 chunk_path = os.path.join(STORAGE_DIR, chunk_filename)
                 sf.write(chunk_path, output.audio, serve_engine.audio_tokenizer.sampling_rate)
-
-                chunk.update({'status': 'completed', 'audio_filename': chunk_filename, 'elapsed_time': time.time() - chunk['start_time']})
                 
-                with open(chunk_path, "rb") as audio_file:
-                    audio_base64 = base64.b64encode(audio_file.read()).decode('utf-8')
-                context_messages.extend([
-                    Message(role="user", content=chunk['text']),
-                    Message(role="assistant", content=AudioContent(raw_audio=audio_base64, audio_url="placeholder"))
-                ])
+                chunk.update({
+                    'status': 'completed',
+                    'audio_filename': chunk_filename,
+                    'elapsed_time': time.time() - chunk['start_time']
+                })
                 
+                # For smart voice, use first chunk as reference for subsequent chunks
                 if i == 0 and project.get("is_smart_voice"):
                     project["voice_ref_path"] = chunk_path
                     with open(chunk_path, "rb") as audio_file:
@@ -167,66 +185,101 @@ def process_project_generation(project_id: str):
                         Message(role="user", content="Reference audio for voice cloning."),
                         Message(role="assistant", content=AudioContent(raw_audio=ref_audio_base64, audio_url="placeholder"))
                     ]
+                
             except Exception as e:
                 print(f"Error generating chunk {i} for project {project_id}: {e}")
-                chunk.update({'status': 'failed', 'error': str(e), 'elapsed_time': time.time() - chunk['start_time']})
-                if project.get('is_oneshot'): raise e
+                chunk.update({
+                    'status': 'failed',
+                    'error': str(e),
+                    'elapsed_time': time.time() - chunk['start_time']
+                })
+                if project.get('is_oneshot'):
+                    raise e
             finally:
                 update_project_progress(project_id)
-                print(f"Chunk {i + 1} finished with status: {chunk['status']}")
-
+                print(f"Chunk {i + 1} finished with status: {chunk['status']} in {chunk.get('elapsed_time', 0):.2f}s")
+        
         project['status'] = 'completed' if all(c['status'] == 'completed' for c in project['chunks']) else 'review'
         
         if project.get('is_oneshot') and project['status'] == 'completed':
             final_audio_filename = stitch_project_audio_internal(project_id)
-            project.update({'final_audio_path': final_audio_filename, 'elapsed_time': time.time() - project['start_time']})
-
+            project.update({
+                'final_audio_path': final_audio_filename,
+                'elapsed_time': time.time() - project['start_time']
+            })
+        
     except Exception as e:
-        project.update({'status': 'failed', 'error': str(e), 'elapsed_time': time.time() - project['start_time']})
+        project.update({
+            'status': 'failed',
+            'error': str(e),
+            'elapsed_time': time.time() - project['start_time']
+        })
     finally:
-        print(f"Generation for {project_id} finished with status: {project['status']}")
+        total_time = time.time() - project['start_time']
+        print(f"Generation for {project_id} finished with status: {project['status']} in {total_time:.2f}s total")
 
 def stitch_project_audio_internal(project_id: str) -> str:
     project = projects.get(project_id)
-    if not project: raise ValueError("Project not found")
-    audio_data_list = [sf.read(os.path.join(STORAGE_DIR, chunk['audio_filename']))[0] for chunk in sorted(project['chunks'], key=lambda x: x['index']) if chunk.get('status') == 'completed' and 'audio_filename' in chunk]
-    if not audio_data_list: raise ValueError("No completed audio chunks to stitch.")
+    if not project:
+        raise ValueError("Project not found")
+    
+    audio_data_list = []
+    for chunk in sorted(project['chunks'], key=lambda x: x['index']):
+        if chunk.get('status') == 'completed' and 'audio_filename' in chunk:
+            audio_path = os.path.join(STORAGE_DIR, chunk['audio_filename'])
+            audio_data, _ = sf.read(audio_path)
+            audio_data_list.append(audio_data)
+    
+    if not audio_data_list:
+        raise ValueError("No completed audio chunks to stitch.")
+    
     final_audio = np.concatenate(audio_data_list)
     final_filename = f"{project_id}_final.wav"
-    sf.write(os.path.join(STORAGE_DIR, final_filename), final_audio, serve_engine.audio_tokenizer.sampling_rate)
+    final_path = os.path.join(STORAGE_DIR, final_filename)
+    sf.write(final_path, final_audio, serve_engine.audio_tokenizer.sampling_rate)
     return final_filename
-
 
 # --- API Endpoints ---
 
 @app.post("/project", status_code=202, tags=["Project"])
 async def create_project(
-    background_tasks: BackgroundTasks, text: str = Form(...), voice_id: str = Form(...),
-    temperature: float = Form(0.3), top_p: float = Form(0.95),
+    background_tasks: BackgroundTasks,
+    text: str = Form(...),
+    voice_id: str = Form(...),
+    temperature: float = Form(0.3),
+    top_p: float = Form(0.95),
 ):
     project_id = f"proj_{uuid.uuid4().hex}"
-    text_chunks = split_text_into_chunks(normalize_text_for_tts(text))
-    if not text_chunks: raise HTTPException(status_code=400, detail="Input text is too short.")
-
+    text_chunks = split_text_into_chunks(normalize_text_for_tts(text), words_per_chunk=100)
+    
+    if not text_chunks:
+        raise HTTPException(status_code=400, detail="Input text is too short.")
+    
     is_smart_voice = (voice_id == "smart_voice")
     voice_ref_path = None
     if not is_smart_voice:
         voice_ref_path = os.path.join(CLONED_VOICES_DIR, f"{voice_id}.wav")
         if not os.path.exists(voice_ref_path):
             raise HTTPException(status_code=404, detail="Cloned voice sample not found.")
-
+    
     projects[project_id] = {
-        "id": project_id, "status": "pending", "start_time": time.time(),
+        "id": project_id,
+        "status": "pending",
+        "start_time": time.time(),
         "params": {"temperature": temperature, "top_p": top_p},
         "chunks": [{"index": i, "text": chunk, "status": "pending"} for i, chunk in enumerate(text_chunks)],
-        "voice_ref_path": voice_ref_path, "is_smart_voice": is_smart_voice, "is_oneshot": False,
+        "voice_ref_path": voice_ref_path,
+        "is_smart_voice": is_smart_voice,
+        "is_oneshot": False,
     }
+    
     background_tasks.add_task(process_project_generation, project_id)
     return {"project_id": project_id, "status": "processing"}
 
 @app.get("/project/{project_id}", tags=["Project"])
 async def get_project_status(project_id: str):
-    if project_id not in projects: raise HTTPException(status_code=404, detail="Project not found")
+    if project_id not in projects:
+        raise HTTPException(status_code=404, detail="Project not found")
     return projects[project_id]
 
 @app.post("/project/{project_id}/stitch", tags=["Project"])
@@ -240,34 +293,47 @@ async def stitch_project_audio(project_id: str):
 
 @app.post("/generate/speech/oneshot", status_code=202, tags=["Standard TTS"])
 async def generate_speech_oneshot(
-    background_tasks: BackgroundTasks, text: str = Form(...), voice_id: str = Form(...),
-    temperature: float = Form(0.3), top_p: float = Form(0.95)
+    background_tasks: BackgroundTasks,
+    text: str = Form(...),
+    voice_id: str = Form(...),
+    temperature: float = Form(0.3),
+    top_p: float = Form(0.95)
 ):
     project_id = f"gen_{uuid.uuid4().hex}"
-    text_chunks = split_text_into_chunks(normalize_text_for_tts(text))
-    if not text_chunks: raise HTTPException(status_code=400, detail="Input text is too short.")
-
+    text_chunks = split_text_into_chunks(normalize_text_for_tts(text), words_per_chunk=100)
+    
+    if not text_chunks:
+        raise HTTPException(status_code=400, detail="Input text is too short.")
+    
     is_smart_voice = (voice_id == "smart_voice")
     voice_ref_path = None
     if not is_smart_voice:
         voice_ref_path = os.path.join(CLONED_VOICES_DIR, f"{voice_id}.wav")
         if not os.path.exists(voice_ref_path):
             raise HTTPException(status_code=404, detail="Cloned voice sample not found.")
-
+    
     projects[project_id] = {
-        "id": project_id, "status": "pending", "start_time": time.time(),
+        "id": project_id,
+        "status": "pending",
+        "start_time": time.time(),
         "params": {"temperature": temperature, "top_p": top_p},
         "chunks": [{"index": i, "text": chunk, "status": "pending"} for i, chunk in enumerate(text_chunks)],
-        "voice_ref_path": voice_ref_path, "is_smart_voice": is_smart_voice, "is_oneshot": True, "result_path": None,
+        "voice_ref_path": voice_ref_path,
+        "is_smart_voice": is_smart_voice,
+        "is_oneshot": True,
+        "result_path": None,
     }
+    
     background_tasks.add_task(process_project_generation, project_id)
     return {"task_id": project_id, "status": "processing"}
 
 @app.get("/generation-status/{task_id}", tags=["Standard TTS"])
 async def get_generation_status(task_id: str):
     task = projects.get(task_id)
-    if not task: raise HTTPException(status_code=404, detail="Task not found")
-    if task.get('final_audio_path'): task['result_path'] = task['final_audio_path']
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if task.get('final_audio_path'):
+        task['result_path'] = task['final_audio_path']
     return task
 
 @app.get("/voices", tags=["Voices"])
@@ -277,76 +343,111 @@ async def get_voices():
     for filename in os.listdir(CLONED_VOICES_DIR):
         if filename.endswith(".json"):
             try:
-                with open(os.path.join(CLONED_VOICES_DIR, filename), 'r') as f: cloned_voices.append(json.load(f))
-            except Exception as e: print(f"Could not load voice metadata {filename}: {e}")
+                with open(os.path.join(CLONED_VOICES_DIR, filename), 'r') as f:
+                    cloned_voices.append(json.load(f))
+            except Exception as e:
+                print(f"Could not load voice metadata {filename}: {e}")
     return default_voices + cloned_voices
 
 @app.post("/clone-voice", tags=["Voices"])
 async def clone_voice(voice_sample: UploadFile = File(...), voice_name: str = Form(...)):
     voice_id = f"clone_{uuid.uuid4().hex[:8]}"
     wav_path = os.path.join(CLONED_VOICES_DIR, f"{voice_id}.wav")
-    with open(wav_path, "wb") as buffer: buffer.write(await voice_sample.read())
+    with open(wav_path, "wb") as buffer:
+        buffer.write(await voice_sample.read())
     metadata = {"id": voice_id, "name": voice_name, "tags": ["cloned"]}
     json_path = os.path.join(CLONED_VOICES_DIR, f"{voice_id}.json")
-    with open(json_path, 'w') as f: json.dump(metadata, f)
+    with open(json_path, 'w') as f:
+        json.dump(metadata, f)
     return metadata
 
 @app.post("/generate/test-clone", tags=["Voices"])
 async def test_cloned_voice(
-    voice_sample: UploadFile = File(...), text: str = Form("This is a test of my cloned voice."), temperature: float = Form(0.3)
+    voice_sample: UploadFile = File(...),
+    text: str = Form("This is a test of my cloned voice."),
+    temperature: float = Form(0.3)
 ):
     temp_path = None
     try:
         temp_path = os.path.join(STORAGE_DIR, f"temp_test_{uuid.uuid4().hex[:8]}.wav")
-        with open(temp_path, "wb") as buffer: buffer.write(await voice_sample.read())
+        with open(temp_path, "wb") as buffer:
+            buffer.write(await voice_sample.read())
+        
         with open(temp_path, "rb") as audio_file:
             audio_base64 = base64.b64encode(audio_file.read()).decode('utf-8')
+        
         messages = [
             Message(role="user", content="Reference audio for voice cloning."),
             Message(role="assistant", content=AudioContent(raw_audio=audio_base64, audio_url="placeholder")),
             Message(role="user", content=text)
         ]
+        
         chat_ml_sample = ChatMLSample(messages=messages)
         output = serve_engine.generate(
-            chat_ml_sample=chat_ml_sample, max_new_tokens=4096,
-            stop_strings=["<|end_of_text|>", "<|eot_id|>"], temperature=temperature, top_p=0.95, seed=42
+            chat_ml_sample=chat_ml_sample,
+            max_new_tokens=2048,
+            stop_strings=["<|end_of_text|>", "<|eot_id|>"],
+            temperature=temperature,
+            top_p=0.95,
+            seed=42
         )
-        if output.audio is None or len(output.audio) == 0: raise ValueError("No audio generated")
+        
+        if output.audio is None or len(output.audio) == 0:
+            raise ValueError("No audio generated")
+        
         test_filename = f"test_{uuid.uuid4().hex[:8]}.wav"
         test_path = os.path.join(STORAGE_DIR, test_filename)
         sf.write(test_path, output.audio, serve_engine.audio_tokenizer.sampling_rate)
+        
         return FileResponse(test_path, media_type="audio/wav", background=lambda: os.remove(test_path))
-    except Exception as e: raise HTTPException(status_code=500, detail=f"Voice test failed: {str(e)}")
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Voice test failed: {str(e)}")
     finally:
-        if temp_path and os.path.exists(temp_path): os.remove(temp_path)
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
 
 @app.post("/saved-audio", tags=["Saved Audio"])
 async def save_generated_audio(
-    audio_filename: str = Form(...), display_name: str = Form(...), audio_type: str = Form("standard")
+    audio_filename: str = Form(...),
+    display_name: str = Form(...),
+    audio_type: str = Form("standard")
 ):
     source_path = os.path.join(STORAGE_DIR, audio_filename)
-    if not os.path.exists(source_path): raise HTTPException(status_code=404, detail="Source audio file not found")
+    if not os.path.exists(source_path):
+        raise HTTPException(status_code=404, detail="Source audio file not found")
+    
     saved_id = f"saved_{uuid.uuid4().hex[:8]}"
     saved_filename = f"{saved_id}.wav"
     saved_path = os.path.join(SAVED_AUDIO_DIR, saved_filename)
     shutil.copy2(source_path, saved_path)
+    
     metadata = {
-        "id": saved_id, "filename": saved_filename, "display_name": display_name,
-        "audio_type": audio_type, "created_at": datetime.now().isoformat(), "source_filename": audio_filename
+        "id": saved_id,
+        "filename": saved_filename,
+        "display_name": display_name,
+        "audio_type": audio_type,
+        "created_at": datetime.now().isoformat(),
+        "source_filename": audio_filename
     }
     saved_audio[saved_id] = metadata
     save_audio_metadata()
     return metadata
 
 @app.get("/saved-audio", tags=["Saved Audio"])
-async def get_saved_audio(): return list(saved_audio.values())
+async def get_saved_audio():
+    return list(saved_audio.values())
 
 @app.delete("/saved-audio/{saved_id}", tags=["Saved Audio"])
 async def delete_saved_audio(saved_id: str):
-    if saved_id not in saved_audio: raise HTTPException(status_code=404, detail="Saved audio not found")
+    if saved_id not in saved_audio:
+        raise HTTPException(status_code=404, detail="Saved audio not found")
+    
     filename = saved_audio[saved_id]["filename"]
     file_path = os.path.join(SAVED_AUDIO_DIR, filename)
-    if os.path.exists(file_path): os.remove(file_path)
+    if os.path.exists(file_path):
+        os.remove(file_path)
+    
     del saved_audio[saved_id]
     save_audio_metadata()
     return {"message": "Audio deleted successfully"}
@@ -355,7 +456,8 @@ async def delete_saved_audio(saved_id: str):
 async def get_audio_file(filename: str):
     for directory in [STORAGE_DIR, SAVED_AUDIO_DIR]:
         path = os.path.join(directory, filename)
-        if os.path.exists(path): return FileResponse(path, media_type="audio/wav")
+        if os.path.exists(path):
+            return FileResponse(path, media_type="audio/wav")
     raise HTTPException(status_code=404, detail="File not found")
 
 # --- Serve the React UI (MUST be defined LAST) ---
@@ -363,10 +465,7 @@ app.mount("/assets", StaticFiles(directory="ui/dist/assets"), name="assets")
 
 @app.get("/{full_path:path}")
 async def serve_react_app(full_path: str):
-    """
-    Serve the React application for any non-API route.
-    This is the catch-all that serves your index.html.
-    """
+    """Serve the React application for any non-API route."""
     return FileResponse("ui/dist/index.html")
 
 if __name__ == "__main__":
