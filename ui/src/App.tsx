@@ -1,10 +1,8 @@
 import { useState } from 'react';
 import { AudioProvider } from './context/AudioContext';
 import { Header } from './components/Header/Header';
-import { VoiceCloneSection } from './components/VoiceCloneSection/VoiceCloneSection';
-import { TextGenerationSection } from './components/TextGenerationSection/TextGenerationSection';
-import { AudioPlayer } from './components/AudioPlayer/AudioPlayer';
-import { SafeTtsSection } from './components/SafeTtsSection/SafeTts';
+import { MainTts } from './components/MainTts/MainTts';
+import { VoiceManagement } from './components/VoiceManagement/VoiceManagement';
 import { SavedAudioSection } from './components/SavedAudioSection/SavedAudioSection';
 import { TtsGuideModal } from './components/TtsGuideModal/TtsGuideModal';
 import { AudioSaveModal } from './components/AudioSaveModal/AudioSaveModal';
@@ -12,8 +10,8 @@ import { AudioSaveModal } from './components/AudioSaveModal/AudioSaveModal';
 function App() {
   const [activeTab, setActiveTab] = useState('generate');
 
-  const tabStyles = "px-4 py-2 text-sm font-medium rounded-md transition-colors focus:outline-none";
-  const activeTabStyles = "bg-blue-600 text-white";
+  const tabStyles = "px-6 py-3 text-sm font-medium rounded-lg transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-gray-900";
+  const activeTabStyles = "bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-lg transform scale-105";
   const inactiveTabStyles = "text-gray-400 hover:bg-gray-800 hover:text-white";
 
   return (
@@ -23,61 +21,51 @@ function App() {
           className="absolute inset-0 bg-[url('data:image/svg+xml,%3Csvg width=\\'60\\' height=\\'60\\' viewBox=\\'0 0 60 60\\' xmlns=\\'http://www.w3.org/2000/svg\\'%3E%3Cg fill=\\'none\\' fill-rule=\\'evenodd\\'%3E%3Cg fill=\\'%239C92AC\\' fill-opacity=\\'0.03\\'%3E%3Cpath d=\\'M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z\\'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E')] opacity-50"
         ></div>
 
-        <div className="relative z-10 container mx-auto px-4 py-12">
-          <div className="max-w-4xl mx-auto space-y-8">
-            <Header />
+        <div className="relative z-10">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-12">
+            <div className="space-y-8">
+              <Header />
 
-            {/* Tab Navigation */}
-            <div className="flex justify-center p-1 bg-gray-800/50 rounded-lg backdrop-blur-sm border border-gray-700">
-                <button 
+              <div className="flex justify-center">
+                <div className="inline-flex p-1.5 bg-gray-800/60 rounded-xl backdrop-blur-sm border border-gray-700 shadow-xl">
+                  <button 
                     onClick={() => setActiveTab('generate')}
                     className={`${tabStyles} ${activeTab === 'generate' ? activeTabStyles : inactiveTabStyles}`}
-                >
-                    Standard Generation
-                </button>
-                <button 
-                    onClick={() => setActiveTab('safe')}
-                    className={`${tabStyles} ${activeTab === 'safe' ? activeTabStyles : inactiveTabStyles}`}
-                >
-                    Safe Long-Form
-                </button>
-                <button 
+                  >
+                    🎙️ Generate Audio
+                  </button>
+                  <button 
+                    onClick={() => setActiveTab('voices')}
+                    className={`${tabStyles} ${activeTab === 'voices' ? activeTabStyles : inactiveTabStyles}`}
+                  >
+                    🎭 My Voices
+                  </button>
+                  <button 
                     onClick={() => setActiveTab('saved')}
                     className={`${tabStyles} ${activeTab === 'saved' ? activeTabStyles : inactiveTabStyles}`}
-                >
-                    Saved Audio
-                </button>
+                  >
+                    💾 Saved Audio
+                  </button>
+                </div>
+              </div>
+
+              <div className="animate-fadeIn">
+                {activeTab === 'generate' && (
+                  <MainTts />
+                )}
+
+                {activeTab === 'voices' && (
+                  <VoiceManagement />
+                )}
+
+                {activeTab === 'saved' && (
+                  <SavedAudioSection />
+                )}
+              </div>
+
+              <TtsGuideModal />
+              <AudioSaveModal />
             </div>
-
-            {/* Tab Content */}
-            {activeTab === 'generate' && (
-                <>
-                    <VoiceCloneSection />
-                    <div className="relative">
-                      <div className="absolute inset-0 flex items-center">
-                        <div className="w-full border-t border-gray-800"></div>
-                      </div>
-                      <div className="relative flex justify-center text-sm">
-                        <span className="px-4 bg-gray-900 text-gray-500">OR</span>
-                      </div>
-                    </div>
-                    <TextGenerationSection />
-                    <AudioPlayer />
-                </>
-            )}
-
-            {activeTab === 'safe' && (
-                <SafeTtsSection />
-            )}
-
-            {activeTab === 'saved' && (
-                <SavedAudioSection />
-            )}
-
-            {/* Modals */}
-            <TtsGuideModal />
-            <AudioSaveModal />
-
           </div>
         </div>
       </div>

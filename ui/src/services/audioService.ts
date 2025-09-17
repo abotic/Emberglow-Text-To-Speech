@@ -17,7 +17,7 @@ class AudioService {
     timeout: API_CONFIG.TIMEOUT,
   });
 
-  // Special client for long-running operations like project creation
+  // Special client for long-running operations
   private longRunningClient = axios.create({
     baseURL: API_CONFIG.BASE_URL,
     timeout: 300000, // 5 minutes for project creation
@@ -48,7 +48,7 @@ class AudioService {
     return response.data;
   }
 
-  async cloneVoice(voiceSample: File, voiceName: string): Promise<{ id: string; name: string }> {
+  async cloneVoice(voiceSample: File, voiceName: string): Promise<{ id: string; name: string; created_at?: string }> {
     const formData = new FormData();
     formData.append('voice_sample', voiceSample);
     formData.append('voice_name', voiceName);
@@ -56,31 +56,19 @@ class AudioService {
     return response.data;
   }
 
-  async startOneshotGeneration(text: string, voiceId: string, temperature: number, topP: number): Promise<string> {
+  async updateVoice(voiceId: string, voiceName: string): Promise<Voice> {
     const formData = new FormData();
-    formData.append('text', text);
-    formData.append('voice_id', voiceId);
-    formData.append('temperature', String(temperature));
-    formData.append('top_p', String(topP));
-
-    const response = await this.longRunningClient.post('/generate/speech/oneshot', formData);
-    return response.data.task_id;
-  }
-  
-  async checkOneshotGenerationStatus(taskId: string): Promise<{ 
-    status: 'processing' | 'completed' | 'failed'; 
-    result_path?: string; 
-    error?: string;
-    current_chunk?: number;
-    total_chunks?: number;
-    progress_percent?: number;
-    elapsed_time?: number;
-  }> {
-    const response = await this.apiClient.get(`/generation-status/${taskId}`);
+    formData.append('voice_name', voiceName);
+    const response = await this.apiClient.put(`/voice/${voiceId}`, formData);
     return response.data;
   }
 
-  // Project-based generation (Safe TTS) with extended timeout
+  async deleteVoice(voiceId: string): Promise<{ message: string }> {
+    const response = await this.apiClient.delete(`/voice/${voiceId}`);
+    return response.data;
+  }
+
+  // Project-based generation
   async startProject(text: string, voiceId: string, temperature: number, topP: number): Promise<{ project_id: string }> {
     const formData = new FormData();
     formData.append('text', text);
@@ -88,7 +76,6 @@ class AudioService {
     formData.append('temperature', String(temperature));
     formData.append('top_p', String(topP));
     
-    // Use long-running client for project creation as it can take time for long texts
     const response = await this.longRunningClient.post('/project', formData);
     return response.data;
   }
@@ -104,7 +91,6 @@ class AudioService {
   }
   
   async stitchAudio(projectId: string): Promise<{ final_audio_filename: string }> {
-    // Stitching can take time for long projects
     const response = await this.longRunningClient.post(`/project/${projectId}/stitch`);
     return response.data;
   }
