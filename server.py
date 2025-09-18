@@ -42,6 +42,9 @@ def save_audio_metadata():
 app = FastAPI(title="Higgs Audio Generation API")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
+# --- Global Generation Lock for Concurrency Control ---
+generation_lock = asyncio.Lock()
+
 # --- OpenAI Client Configuration ---
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if OPENAI_API_KEY:
@@ -130,7 +133,16 @@ If I give you a block of existing text, your task is a **verbatim transformation
 If I ask you to write a story, script, or any other new content, you must generate it from scratch while **natively following all Core Narration Rules as you write**. The entire creative output must be born ready for TTS narration.
 * **Ensure a Clean Finish:** When generating new content, the very last sentence of the entire script must provide a clear and conclusive ending. This helps prevent the AI from adding extra sounds after the final word.
 
-Determine the correct mode from my instructions and proceed."""
+---
+## CRITICAL OUTPUT INSTRUCTIONS
+- **NEVER** engage in conversation, respond to questions, or provide any commentary on the text you are given.
+- **NEVER** add any text, headers, or explanations before or after the transformed script.
+- Your entire response must be **ONLY** the transformed text and nothing else.
+- If the input text is already perfectly formatted according to the rules, return it exactly as it was given without any changes or comments.
+---
+
+Determine the correct mode from my instructions and proceed.
+"""
 
 async def normalize_text_with_openai(text: str) -> str:
     """Normalize text using OpenAI GPT-4o-mini for optimal TTS generation."""
@@ -145,7 +157,7 @@ async def normalize_text_with_openai(text: str) -> str:
             model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": TTS_NORMALIZATION_PROMPT},
-                {"role": "user", "content": text}
+                {"role": "user", "content": f"Apply your rules to the following text:\n\n---\n\n{text}"}
             ],
             temperature=0.1,  # Low temperature for consistency
             max_tokens=len(text.split()) * 2 + 500 # Allow room for expansion
@@ -239,10 +251,68 @@ def get_context_messages(project, chunk_index: int = 0):
     
     return context_messages
 
-def process_project_generation(project_id: str):
+async def process_project_with_normalization_and_generation(project_id: str):
+    """Background task that handles both normalization and generation with proper locking"""
+    async with generation_lock:
+        project_path = os.path.join(PROJECTS_DIR, f"{project_id}.json")
+        
+        try:
+            with open(project_path, 'r') as f:
+                project = json.load(f)
+            
+            # Phase 1: Normalization (if needed)
+            if project.get('auto_normalize') and openai_client and not project.get('was_normalized'):
+                project['status'] = 'normalizing'
+                with open(project_path, 'w') as f:
+                    json.dump(project, f, indent=2)
+                
+                print(f"Auto-normalizing text for project {project_id}")
+                original_text = project.get('original_text', '')
+                normalized_text = await normalize_text_with_openai(original_text)
+                
+                if normalized_text != original_text:
+                    project['was_normalized'] = True
+                    project['normalized_text'] = normalized_text
+                    print(f"Text normalization completed for project {project_id}")
+                else:
+                    project['was_normalized'] = False
+                    normalized_text = original_text
+                    print(f"Text was already normalized for project {project_id}")
+                
+                # Update chunks with normalized text
+                processed_text = normalize_text_for_tts(normalized_text)
+                project['chunks'] = [{"index": i, "text": chunk, "status": "pending"} 
+                                   for i, chunk in enumerate(split_text_into_chunks(processed_text))]
+                
+                with open(project_path, 'w') as f:
+                    json.dump(project, f, indent=2)
+            
+            # Phase 2: Generation
+            project['status'] = 'processing'
+            with open(project_path, 'w') as f:
+                json.dump(project, f, indent=2)
+            
+            await asyncio.get_event_loop().run_in_executor(None, process_project_generation_sync, project_id)
+            
+        except Exception as e:
+            print(f"FATAL ERROR in background processing for project {project_id}: {e}")
+            try:
+                with open(project_path, 'r+') as f:
+                    project_data = json.load(f)
+                    project_data['status'] = 'failed'
+                    project_data['error'] = f"Background processing failed: {str(e)}"
+                    f.seek(0)
+                    json.dump(project_data, f, indent=2)
+                    f.truncate()
+            except Exception as write_error:
+                print(f"Could not write failure status to project file {project_id}: {write_error}")
+
+def process_project_generation_sync(project_id: str):
+    """The synchronous part of the generation process (runs in executor)."""
     project_path = os.path.join(PROJECTS_DIR, f"{project_id}.json")
     try:
-        with open(project_path, 'r') as f: project = json.load(f)
+        with open(project_path, 'r') as f:
+            project = json.load(f)
 
         num_chunks = len(project.get('chunks', []))
         is_smart_voice = project.get("is_smart_voice", False)
@@ -255,7 +325,8 @@ def process_project_generation(project_id: str):
                     return
 
             chunk = project['chunks'][i]
-            if chunk.get('status') == 'completed': continue
+            if chunk.get('status') == 'completed':
+                continue
 
             print(f"Starting generation for chunk {i+1}/{num_chunks} of project {project_id}")
             chunk.update({'status': 'processing', 'start_time': time.time()})
@@ -266,45 +337,70 @@ def process_project_generation(project_id: str):
                 chunk_filename = f"{project_id}_chunk_{i}.wav"
                 sf.write(os.path.join(STORAGE_DIR, chunk_filename), audio_data, serve_engine.audio_tokenizer.sampling_rate)
                 chunk.update({'status': 'completed', 'audio_filename': chunk_filename})
-
                 if i == 0 and is_smart_voice:
                     project["voice_ref_path"] = os.path.join(STORAGE_DIR, chunk_filename)
-
             except Exception as e:
                 print(f"Error on chunk {i} for {project_id}: {e}")
                 chunk.update({'status': 'failed', 'error': str(e)})
-            
             finally:
                 chunk['elapsed_time'] = time.time() - chunk.get('start_time', time.time())
                 update_project_progress(project)
-                
-                with open(project_path, 'r') as f:
-                    if json.load(f).get('status') == 'cancelling':
-                        project['status'] = 'cancelling'
+                with open(project_path, 'w') as f:
+                    json.dump(project, f, indent=2)
 
-                with open(project_path, 'w') as f: json.dump(project, f, indent=2)
-
-        if all(c['status'] == 'completed' for c in project['chunks']):
-            project['status'] = 'completed'
-        else:
-            project['status'] = 'review'
-        
-        with open(project_path, 'w') as f: json.dump(project, f, indent=2)
+        with open(project_path, 'r+') as f:
+            project = json.load(f)
+            if all(c['status'] == 'completed' for c in project['chunks']):
+                project['status'] = 'completed'
+            else:
+                project['status'] = 'review'
+            f.seek(0)
+            json.dump(project, f, indent=2)
+            f.truncate()
         print(f"Generation for {project_id} finished with status: {project['status']}")
-
     except Exception as e:
         print(f"FATAL ERROR processing project {project_id}: {e}")
-        try:
-            with open(project_path, 'r+') as f:
-                project_data = json.load(f)
-                project_data['status'] = 'failed'
-                project_data['error'] = f"A fatal error occurred: {str(e)}"
-                f.seek(0)
-                json.dump(project_data, f, indent=2)
-                f.truncate()
-        except Exception as write_error: print(f"Could not write failure status to project file {project_id}: {write_error}")
 
-def regenerate_single_chunk_task(project_id: str, chunk_index: int):
+async def process_project_background_task(project_id: str):
+    """Async wrapper that handles locking, normalization, and then runs sync generation."""
+    async with generation_lock:
+        print(f"Lock acquired for project {project_id}")
+        project_path = os.path.join(PROJECTS_DIR, f"{project_id}.json")
+        try:
+            with open(project_path, 'r') as f:
+                project = json.load(f)
+
+            if project.get('auto_normalize') and openai_client:
+                project['status'] = 'normalizing'
+                with open(project_path, 'w') as f: json.dump(project, f, indent=2)
+                
+                original_text = project.get('original_text', '')
+                normalized_text = await normalize_text_with_openai(original_text)
+                
+                project['was_normalized'] = normalized_text != original_text
+                project['normalized_text'] = normalized_text if project['was_normalized'] else None
+                
+                processed_text = normalize_text_for_tts(normalized_text)
+                project['chunks'] = [{"index": i, "text": chunk, "status": "pending"} for i, chunk in enumerate(split_text_into_chunks(processed_text))]
+            
+            project['status'] = 'processing'
+            with open(project_path, 'w') as f: json.dump(project, f, indent=2)
+
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, process_project_generation_sync, project_id)
+
+        except Exception as e:
+            print(f"FATAL ERROR in background task for project {project_id}: {e}")
+        finally:
+            print(f"Lock released for project {project_id}")
+
+async def regenerate_single_chunk_task_async(project_id: str, chunk_index: int):
+    """Async wrapper for chunk regeneration with locking"""
+    async with generation_lock:
+        await asyncio.get_event_loop().run_in_executor(None, regenerate_single_chunk_task_sync, project_id, chunk_index)
+
+def regenerate_single_chunk_task_sync(project_id: str, chunk_index: int):
+    """Synchronous chunk regeneration logic"""
     project_path = os.path.join(PROJECTS_DIR, f"{project_id}.json")
     try:
         with open(project_path, 'r') as f: project = json.load(f)
@@ -354,7 +450,8 @@ def regenerate_single_chunk_task(project_id: str, chunk_index: int):
                 f.seek(0)
                 json.dump(project_data, f, indent=2)
                 f.truncate()
-        except Exception as write_error: print(f"Could not write failure status to project file {project_id}: {write_error}")
+        except Exception as write_error: 
+            print(f"Could not write failure status to project file {project_id}: {write_error}")
 
 def stitch_project_audio_internal(project_id: str) -> str:
     project_path = os.path.join(PROJECTS_DIR, f"{project_id}.json")
@@ -373,51 +470,43 @@ def stitch_project_audio_internal(project_id: str) -> str:
 # --- API Endpoints ---
 @app.post("/project", status_code=202, tags=["Project"])
 async def create_project(
-    background_tasks: BackgroundTasks, 
-    text: str = Form(...), 
-    voice_id: str = Form(...), 
-    temperature: float = Form(0.2), 
+    background_tasks: BackgroundTasks,
+    text: str = Form(...),
+    voice_id: str = Form(...),
+    temperature: float = Form(0.2),
     top_p: float = Form(0.95),
     auto_normalize: bool = Form(True)
 ):
     project_id = f"proj_{uuid.uuid4().hex}"
-    
-    processed_text = text
-    was_normalized = False
-    
-    if auto_normalize and openai_client:
-        print(f"Auto-normalizing text for project {project_id}")
-        normalized_text = await normalize_text_with_openai(text)
-        if normalized_text != text:
-            processed_text = normalized_text
-            was_normalized = True
-            print(f"Text normalization completed for project {project_id}")
-        else:
-            print(f"Text was already normalized for project {project_id}")
-    
     voice_ref_path = None
     if voice_id != "smart_voice":
         voice_ref_path = os.path.join(CLONED_VOICES_DIR, f"{voice_id}.wav")
-        if not os.path.exists(voice_ref_path): 
+        if not os.path.exists(voice_ref_path):
             raise HTTPException(status_code=404, detail="Cloned voice sample not found.")
-            
+    
+    initial_status = "normalizing" if (auto_normalize and openai_client) else "processing"
+    
+    # Create a minimal project file to respond instantly
     project_data = {
-        "id": project_id, 
-        "status": "pending", 
-        "params": {"temperature": temperature, "top_p": top_p}, 
-        "chunks": [{"index": i, "text": chunk, "status": "pending"} 
-                   for i, chunk in enumerate(split_text_into_chunks(normalize_text_for_tts(processed_text)))], 
-        "voice_ref_path": voice_ref_path, 
+        "id": project_id,
+        "status": initial_status,
+        "original_text": text,
+        "auto_normalize": auto_normalize,
+        "params": {"temperature": temperature, "top_p": top_p},
+        "chunks": [], # Chunks are now generated in the background
+        "voice_ref_path": voice_ref_path,
         "is_smart_voice": (voice_id == "smart_voice"),
-        "was_normalized": was_normalized,
-        "normalized_text": processed_text if was_normalized else None,
+        "was_normalized": False,
+        "normalized_text": None,
     }
     
-    with open(os.path.join(PROJECTS_DIR, f"{project_id}.json"), 'w') as f: 
+    with open(os.path.join(PROJECTS_DIR, f"{project_id}.json"), 'w') as f:
         json.dump(project_data, f, indent=2)
-        
-    background_tasks.add_task(process_project_generation, project_id)
-    return {"project_id": project_id, "status": "processing", "was_normalized": was_normalized}
+    
+    # Call the new async background task wrapper
+    background_tasks.add_task(process_project_background_task, project_id)
+    
+    return {"project_id": project_id, "status": initial_status}
 
 @app.get("/project/{project_id}", tags=["Project"])
 async def get_project_status(project_id: str):
@@ -446,7 +535,7 @@ async def get_active_projects():
             if filename.endswith('.json'):
                 with open(os.path.join(PROJECTS_DIR, filename), 'r') as f:
                     project = json.load(f)
-                    if project.get('status') in ['pending', 'processing']:
+                    if project.get('status') in ['pending', 'processing', 'normalizing']:
                         active_projects.append({
                             'id': project['id'],
                             'name': project.get('name', 'Unnamed Project'),
@@ -493,7 +582,8 @@ async def cancel_project(project_id: str):
     if not os.path.exists(project_path): raise HTTPException(status_code=404, detail="Project not found")
     with open(project_path, 'r+') as f:
         project = json.load(f)
-        if project['status'] not in ['pending', 'processing']: return {"message": "Project is not in a cancellable state."}
+        if project['status'] not in ['pending', 'processing', 'normalizing']: 
+            return {"message": "Project is not in a cancellable state."}
         project['status'] = 'cancelling'; f.seek(0); json.dump(project, f, indent=2); f.truncate()
     return {"message": "Project cancellation requested."}
 
@@ -508,7 +598,7 @@ async def regenerate_chunk_endpoint(project_id: str, chunk_index: int, backgroun
         if not 0 <= chunk_index < len(project['chunks']):
             raise HTTPException(status_code=400, detail="Invalid chunk index")
 
-    background_tasks.add_task(regenerate_single_chunk_task, project_id, chunk_index)
+    background_tasks.add_task(regenerate_single_chunk_task_async, project_id, chunk_index)
     return {"message": f"Regeneration for chunk {chunk_index} has been queued."}
 
 @app.get("/voices", tags=["Voices"])
@@ -524,7 +614,6 @@ async def get_voices():
                 except Exception as e:
                     print(f"Could not load voice metadata from {f}: {e}")
     return default_voices + cloned_voices_list
-
 
 @app.post("/clone-voice", tags=["Voices"])
 async def clone_voice(voice_sample: UploadFile = File(...), voice_name: str = Form(...)):
