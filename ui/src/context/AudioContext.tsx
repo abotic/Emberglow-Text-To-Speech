@@ -39,7 +39,7 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   const [mainSelectedVoice, setMainSelectedVoice] = useState<Voice | null>(null);
   
   // Parameters
-  const [temperature, setTemperature] = useState(0.3);
+  const [temperature, setTemperature] = useState(0.2);
   const [topP, setTopP] = useState(0.95);
   
   // TTS Guide Modal

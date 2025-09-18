@@ -1,35 +1,30 @@
-import React, { useRef } from 'react';
-import { useAudioContext } from '../../context/AudioContext';
+import React, { useRef, useState } from 'react';
 import { audioService } from '../../services/audioService';
 import { IconUpload, IconX, IconMic, IconPlay } from '../../icons';
 import { Button } from '../ui/Button';
 import { Card } from '../ui/Card';
 
 export const VoiceCloneSection: React.FC = () => {
-  const {
-    voiceToClone, setVoiceToClone,
-    clonedVoiceName, setClonedVoiceName,
-    isCloning, setIsCloning,
-    cloningError, setCloningError,
-    cloningSuccess, setCloningSuccess,
-    isTestingVoice, setIsTestingVoice,
-    testAudioUrl, setTestAudioUrl,
-    refreshVoices,
-  } = useAudioContext();
+  const [voiceToClone, setVoiceToClone] = useState<File | null>(null);
+  const [clonedVoiceName, setClonedVoiceName] = useState('');
+  const [isCloning, setIsCloning] = useState(false);
+  const [cloningError, setCloningError] = useState<string | null>(null);
+  const [cloningSuccess, setCloningSuccess] = useState<string | null>(null);
+  const [isTestingVoice, setIsTestingVoice] = useState(false);
+  const [testAudioUrl, setTestAudioUrl] = useState<string | null>(null);
   
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      // Validate file type and size
       const validTypes = ['audio/wav', 'audio/mp3', 'audio/mpeg', 'audio/m4a', 'audio/ogg'];
       if (!validTypes.includes(file.type)) {
         setCloningError('Please upload a valid audio file (WAV, MP3, or M4A)');
         return;
       }
       
-      if (file.size > 10 * 1024 * 1024) { // 10MB limit
+      if (file.size > 10 * 1024 * 1024) {
         setCloningError('File size must be less than 10MB');
         return;
       }
@@ -59,14 +54,21 @@ export const VoiceCloneSection: React.FC = () => {
     setTestAudioUrl(null);
     
     try {
-      const response = await audioService.testClonedVoice(
-        voiceToClone, 
-        "This is a test of my cloned voice. How does it sound?", 
-        0.3
-      );
+      const formData = new FormData();
+      formData.append('audio', voiceToClone);
+      formData.append('text', "This is a test of my cloned voice. How does it sound?");
+      formData.append('temperature', '0.2');
       
-      // Create blob URL from response
-      const audioBlob = new Blob([response], { type: 'audio/wav' });
+      const response = await fetch('/api/test-voice', {
+        method: 'POST',
+        body: formData,
+      });
+      
+      if (!response.ok) {
+        throw new Error('Failed to test voice');
+      }
+      
+      const audioBlob = await response.blob();
       const url = URL.createObjectURL(audioBlob);
       setTestAudioUrl(url);
       
@@ -96,9 +98,7 @@ export const VoiceCloneSection: React.FC = () => {
     try {
       await audioService.cloneVoice(voiceToClone, clonedVoiceName.trim());
       setCloningSuccess(`Voice "${clonedVoiceName}" saved successfully! It's now available in the voice dropdown.`);
-      refreshVoices(); // Trigger voice list refresh
       
-      // Auto-clear after 5 seconds
       setTimeout(() => {
         handleRemoveFile();
         setClonedVoiceName('');
@@ -113,7 +113,6 @@ export const VoiceCloneSection: React.FC = () => {
     }
   };
 
-  // Clean up test audio URL when component unmounts
   React.useEffect(() => {
     return () => {
       if (testAudioUrl) {
@@ -131,7 +130,6 @@ export const VoiceCloneSection: React.FC = () => {
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-start">
-            {/* Left Column: Upload & Test */}
             <div className="space-y-4">
                 <div className="space-y-2">
                     <label className="block text-sm font-medium text-gray-300">Voice Sample</label>
@@ -199,7 +197,6 @@ export const VoiceCloneSection: React.FC = () => {
                 )}
             </div>
 
-            {/* Right Column: Name & Save */}
             <div className="space-y-4">
                 <div className="space-y-2">
                     <label className="block text-sm font-medium text-gray-300">Voice Name</label>
@@ -226,7 +223,6 @@ export const VoiceCloneSection: React.FC = () => {
                     <span>{isCloning ? 'Saving Voice...' : 'Save Voice'}</span>
                 </Button>
 
-                {/* Tips */}
                 <div className="p-3 bg-blue-900/20 border border-blue-800/50 rounded-xl text-xs text-blue-200">
                   <h4 className="font-semibold mb-1">Tips for best results:</h4>
                   <ul className="space-y-1 list-disc list-inside">
@@ -239,7 +235,6 @@ export const VoiceCloneSection: React.FC = () => {
             </div>
         </div>
 
-        {/* Status Messages */}
         <div className="pt-2 space-y-2">
             {cloningSuccess && (
                 <div className="p-3 bg-green-900/20 border border-green-800/50 rounded-xl text-center">

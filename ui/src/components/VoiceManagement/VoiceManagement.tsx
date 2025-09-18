@@ -165,13 +165,21 @@ export const VoiceManagement: React.FC = () => {
     setTestAudioUrl(null);
     
     try {
-      const response = await audioService.testClonedVoice(
-        voiceToClone, 
-        "This is a test of my cloned voice. How does it sound?", 
-        0.3
-      );
+      const formData = new FormData();
+      formData.append('audio', voiceToClone);
+      formData.append('text', "This is a test of my cloned voice. How does it sound?");
+      formData.append('temperature', '0.2');
       
-      const audioBlob = new Blob([response], { type: 'audio/wav' });
+      const response = await fetch('/api/test-voice', {
+        method: 'POST',
+        body: formData,
+      });
+      
+      if (!response.ok) {
+        throw new Error('Failed to test voice');
+      }
+      
+      const audioBlob = await response.blob();
       const url = URL.createObjectURL(audioBlob);
       setTestAudioUrl(url);
       
@@ -202,7 +210,6 @@ export const VoiceManagement: React.FC = () => {
       setSuccess(`Voice "${clonedVoiceName}" saved successfully!`);
       loadVoices();
       
-      // Reset form
       handleRemoveFile();
       setClonedVoiceName('');
       
@@ -221,7 +228,14 @@ export const VoiceManagement: React.FC = () => {
     }
 
     try {
-      await audioService.deleteVoice(voiceId);
+      const response = await fetch(`/api/voices/${voiceId}`, {
+        method: 'DELETE',
+      });
+      
+      if (!response.ok) {
+        throw new Error('Failed to delete voice');
+      }
+      
       loadVoices();
     } catch (err) {
       setError('Failed to delete voice');
@@ -230,7 +244,18 @@ export const VoiceManagement: React.FC = () => {
 
   const handleRename = async (voiceId: string, newName: string) => {
     try {
-      await audioService.updateVoice(voiceId, newName);
+      const response = await fetch(`/api/voices/${voiceId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ name: newName }),
+      });
+      
+      if (!response.ok) {
+        throw new Error('Failed to rename voice');
+      }
+      
       loadVoices();
     } catch (err) {
       setError('Failed to rename voice');
@@ -247,7 +272,6 @@ export const VoiceManagement: React.FC = () => {
 
   return (
     <div className="space-y-8">
-      {/* Upload New Voice Section */}
       <Card gradient className="p-6 md:p-8">
         <div className="space-y-6">
           <div>
@@ -256,7 +280,6 @@ export const VoiceManagement: React.FC = () => {
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 lg:gap-8">
-            {/* Upload Section */}
             <div className="space-y-4">
               <div className="space-y-2">
                 <label className="block text-sm font-medium text-gray-300">Voice Sample</label>
@@ -324,7 +347,6 @@ export const VoiceManagement: React.FC = () => {
               )}
             </div>
 
-            {/* Save Section */}
             <div className="space-y-4">
               <div className="space-y-2">
                 <label className="block text-sm font-medium text-gray-300">Voice Name</label>
@@ -375,7 +397,6 @@ export const VoiceManagement: React.FC = () => {
         </div>
       </Card>
 
-      {/* Saved Voices Section */}
       <Card gradient className="p-6 md:p-8">
         <div className="space-y-6">
           <div className="flex items-center justify-between">

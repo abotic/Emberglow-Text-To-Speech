@@ -42,5 +42,4 @@ WORKDIR /app
 EXPOSE 8000
 
 # The command to run, using the absolute path to python3
-# Setting the workers to 2 because of potential 525 HTTTP error
-CMD ["/usr/bin/python3", "-m", "uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+CMD ["/usr/bin/python3", "-m", "uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"]

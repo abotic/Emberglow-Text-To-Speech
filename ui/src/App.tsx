@@ -10,7 +10,7 @@ import { AudioSaveModal } from './components/AudioSaveModal/AudioSaveModal';
 function App() {
   const [activeTab, setActiveTab] = useState('generate');
 
-  const tabStyles = "px-6 py-3 text-sm font-medium rounded-lg transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-gray-900";
+  const tabStyles = "flex-1 px-6 py-5 text-sm font-medium rounded-lg transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-gray-900 text-center";
   const activeTabStyles = "bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-lg transform scale-105";
   const inactiveTabStyles = "text-gray-400 hover:bg-gray-800 hover:text-white";
 
@@ -26,8 +26,8 @@ function App() {
             <div className="space-y-8">
               <Header />
 
-              <div className="flex justify-center">
-                <div className="inline-flex p-1.5 bg-gray-800/60 rounded-xl backdrop-blur-sm border border-gray-700 shadow-xl">
+              <div className="w-full">
+                <div className="flex p-1.5 bg-gray-800/60 rounded-xl backdrop-blur-sm border border-gray-700 shadow-xl max-w-8xl mx-auto">
                   <button 
                     onClick={() => setActiveTab('generate')}
                     className={`${tabStyles} ${activeTab === 'generate' ? activeTabStyles : inactiveTabStyles}`}

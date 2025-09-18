@@ -11,7 +11,7 @@ export const Header: React.FC = () => {
         </div>
       </div>
       <h1 className="text-5xl sm:text-6xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-indigo-600 tracking-tight">
-        Higgs Audio
+        TTS
       </h1>
       <p className="mt-4 text-lg text-gray-400 max-w-2xl mx-auto">
         Professional text-to-speech generation with advanced voice synthesis and cloning capabilities
