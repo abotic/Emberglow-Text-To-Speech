@@ -19,7 +19,7 @@ class AudioService {
 
   private longRunningClient = axios.create({
     baseURL: API_CONFIG.BASE_URL,
-    timeout: 300000,
+    timeout: 0, // No timeout for long operations
   });
 
   async getAvailableVoices(): Promise<Voice[]> {
@@ -42,7 +42,11 @@ class AudioService {
     formData.append('temperature', String(temperature));
     formData.append('top_p', String(topP));
     formData.append('auto_normalize', String(autoNormalize));
-    const response = await this.longRunningClient.post('/project', formData);
+    
+    const response = await axios.post('/api/project', formData, {
+      baseURL: API_CONFIG.BASE_URL,
+      timeout: 0
+    });
     return response.data;
   }
 

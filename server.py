@@ -319,10 +319,12 @@ def process_project_generation_sync(project_id: str):
 
         for i in range(num_chunks):
             with open(project_path, 'r') as f:
-                if json.load(f).get('status') == 'cancelling':
-                    print(f"Cancellation detected for project {project_id}. Stopping.")
-                    cleanup_project_data(project_id)
-                    return
+                project = json.load(f)
+
+            if project.get('status') == 'cancelling':
+                print(f"Cancellation detected for project {project_id}. Stopping.")
+                cleanup_project_data(project_id)
+                return
 
             chunk = project['chunks'][i]
             if chunk.get('status') == 'completed':
@@ -516,7 +518,12 @@ async def get_project_status(project_id: str):
     try:
         with open(project_path, 'r') as f:
             project_data = json.load(f)
+        
+        project_data.pop('original_text', None)
+        project_data.pop('normalized_text', None)
+        
         return project_data
+        
     except json.JSONDecodeError:
         raise HTTPException(status_code=503, detail="Project file is currently being updated. Please try again.")
 

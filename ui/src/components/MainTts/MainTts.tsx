@@ -11,7 +11,6 @@ import { IconRefreshCw, IconDownload, IconX, IconSave, IconFileText } from '../.
 interface Project { id: string; audioName?: string; chunks: Chunk[]; progress_percent?: number; completed_chunks?: number; total_chunks?: number; status?: string; was_normalized?: boolean; }
 interface Chunk { index: number; text: string; status: 'pending' | 'processing' | 'completed' | 'failed'; audio_filename?: string; elapsed_time?: number; error?: string; }
 
-// Enhanced storage utility for mobile reliability
 class ProjectStateManager {
     private static STORAGE_KEY = 'activeProject';
 
@@ -19,18 +18,19 @@ class ProjectStateManager {
         const data = { projectId, projectName, timestamp: Date.now() };
 
         try {
-            // Try multiple storage methods
+            // Always update URL for RunPod compatibility
+            const url = new URL(window.location.href);
+            url.searchParams.set('project', projectId);
+            url.searchParams.set('name', encodeURIComponent(projectName));
+            window.history.replaceState({}, '', url.toString());
+
+            // Try storage as fallback
             if (typeof localStorage !== 'undefined') {
                 localStorage.setItem(this.STORAGE_KEY, JSON.stringify(data));
             }
             if (typeof sessionStorage !== 'undefined') {
                 sessionStorage.setItem(this.STORAGE_KEY, JSON.stringify(data));
             }
-            // Also store in URL params for mobile reliability
-            const url = new URL(window.location.href);
-            url.searchParams.set('project', projectId);
-            url.searchParams.set('name', encodeURIComponent(projectName));
-            window.history.replaceState({}, '', url.toString());
 
             return true;
         } catch (error) {
@@ -41,7 +41,7 @@ class ProjectStateManager {
 
     static loadProject(): { projectId: string; projectName: string } | null {
         try {
-            // Try URL params first (most reliable on mobile)
+            // Try URL params first (most reliable on mobile and RunPod)
             const urlParams = new URLSearchParams(window.location.search);
             const projectFromUrl = urlParams.get('project');
             const nameFromUrl = urlParams.get('name');
@@ -89,7 +89,6 @@ class ProjectStateManager {
                 sessionStorage.removeItem(this.STORAGE_KEY);
             }
 
-            // Clear URL params
             const url = new URL(window.location.href);
             url.searchParams.delete('project');
             url.searchParams.delete('name');
@@ -100,7 +99,6 @@ class ProjectStateManager {
     }
 }
 
-// Toggle Switch Component
 const ToggleSwitch: React.FC<{
     checked: boolean;
     onChange: (checked: boolean) => void;
@@ -171,12 +169,13 @@ export const MainTts: React.FC = () => {
                         const projectName = activeProject.name || 'Recovered Project';
                         console.log("Found active project on server, redirecting to:", activeProject.id);
 
-                        const newUrl = new URL(window.location.href);
-                        newUrl.searchParams.set('project', activeProject.id);
-                        newUrl.searchParams.set('name', encodeURIComponent(projectName));
+                        // Build absolute URL for RunPod proxy compatibility
+                        const currentUrl = new URL(window.location.href);
+                        currentUrl.searchParams.set('project', activeProject.id);
+                        currentUrl.searchParams.set('name', encodeURIComponent(projectName));
 
-                        window.location.assign(newUrl.toString());
-
+                        // Use replace for better proxy compatibility
+                        window.location.replace(currentUrl.toString());
                         return;
                     }
                 }
@@ -264,7 +263,7 @@ export const MainTts: React.FC = () => {
             const hasProcessingChunks = data.chunks.some((chunk: Chunk) => chunk.status === 'processing');
 
             if (!isDone || hasProcessingChunks) {
-                pollingTimeoutRef.current = setTimeout(() => pollProjectStatus(projectId), 2000);
+                pollingTimeoutRef.current = setTimeout(() => pollProjectStatus(projectId), 5000);
             } else {
                 setIsProcessing(false);
                 setIsCancelling(false);
@@ -288,6 +287,7 @@ export const MainTts: React.FC = () => {
         if (!project) return;
         if (!confirm('Are you sure you want to cancel this project? The current chunk will finish, then the project will be deleted.')) return;
         setIsCancelling(true); setError(null); stopPolling();
+
         try {
             await audioService.cancelProject(project.id);
             pollProjectStatus(project.id);
