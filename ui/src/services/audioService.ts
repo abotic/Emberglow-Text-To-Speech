@@ -35,12 +35,13 @@ class AudioService {
     return response.data;
   }
 
-  async startProject(text: string, voiceId: string, temperature: number, topP: number): Promise<{ project_id: string }> {
+  async startProject(text: string, voiceId: string, temperature: number, topP: number, autoNormalize: boolean = true): Promise<{ project_id: string; was_normalized?: boolean }> {
     const formData = new FormData();
     formData.append('text', text);
     formData.append('voice_id', voiceId);
     formData.append('temperature', String(temperature));
     formData.append('top_p', String(topP));
+    formData.append('auto_normalize', String(autoNormalize));
     const response = await this.longRunningClient.post('/project', formData);
     return response.data;
   }
@@ -68,6 +69,27 @@ class AudioService {
   async cancelProject(projectId: string): Promise<{ message: string }> {
     const response = await this.apiClient.post(`/project/${projectId}/cancel`);
     return response.data;
+  }
+
+  async downloadNormalizedText(projectId: string, filename: string): Promise<void> {
+    try {
+      const response = await this.apiClient.get(`/project/${projectId}/normalized-text`, {
+        responseType: 'blob'
+      });
+      
+      const blob = new Blob([response.data], { type: 'text/plain' });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('Error downloading normalized text:', error);
+      throw error;
+    }
   }
   
   async saveGeneratedAudio(audioFilename: string, displayName: string, audioType: 'standard' | 'project'): Promise<SavedAudio> {

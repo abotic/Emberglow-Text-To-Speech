@@ -6,10 +6,133 @@ import { Card } from '../ui/Card';
 import { Button } from '../ui/Button';
 import { Spinner } from '../ui/Spinner';
 import { ProgressBar } from '../ui/ProgressBar';
-import { IconRefreshCw, IconDownload, IconX, IconSave } from '../../icons';
+import { IconRefreshCw, IconDownload, IconX, IconSave, IconFileText } from '../../icons';
 
-interface Project { id: string; audioName?: string; chunks: Chunk[]; progress_percent?: number; completed_chunks?: number; total_chunks?: number; status?: string; }
+interface Project { id: string; audioName?: string; chunks: Chunk[]; progress_percent?: number; completed_chunks?: number; total_chunks?: number; status?: string; was_normalized?: boolean; }
 interface Chunk { index: number; text: string; status: 'pending' | 'processing' | 'completed' | 'failed'; audio_filename?: string; elapsed_time?: number; error?: string; }
+
+// Enhanced storage utility for mobile reliability
+class ProjectStateManager {
+  private static STORAGE_KEY = 'activeProject';
+  
+  static saveProject(projectId: string, projectName: string): boolean {
+    const data = { projectId, projectName, timestamp: Date.now() };
+    
+    try {
+      // Try multiple storage methods
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(this.STORAGE_KEY, JSON.stringify(data));
+      }
+      if (typeof sessionStorage !== 'undefined') {
+        sessionStorage.setItem(this.STORAGE_KEY, JSON.stringify(data));
+      }
+      // Also store in URL params for mobile reliability
+      const url = new URL(window.location.href);
+      url.searchParams.set('project', projectId);
+      url.searchParams.set('name', encodeURIComponent(projectName));
+      window.history.replaceState({}, '', url.toString());
+      
+      return true;
+    } catch (error) {
+      console.warn('Failed to save project state:', error);
+      return false;
+    }
+  }
+  
+  static loadProject(): { projectId: string; projectName: string } | null {
+    try {
+      // Try URL params first (most reliable on mobile)
+      const urlParams = new URLSearchParams(window.location.search);
+      const projectFromUrl = urlParams.get('project');
+      const nameFromUrl = urlParams.get('name');
+      
+      if (projectFromUrl && nameFromUrl) {
+        return { 
+          projectId: projectFromUrl, 
+          projectName: decodeURIComponent(nameFromUrl) 
+        };
+      }
+      
+      // Fallback to storage
+      let data = null;
+      if (typeof localStorage !== 'undefined') {
+        data = localStorage.getItem(this.STORAGE_KEY);
+      }
+      if (!data && typeof sessionStorage !== 'undefined') {
+        data = sessionStorage.getItem(this.STORAGE_KEY);
+      }
+      
+      if (data) {
+        const parsed = JSON.parse(data);
+        // Check if data is recent (within 24 hours)
+        if (Date.now() - parsed.timestamp < 24 * 60 * 60 * 1000) {
+          return { 
+            projectId: parsed.projectId, 
+            projectName: parsed.projectName 
+          };
+        }
+      }
+      
+      return null;
+    } catch (error) {
+      console.warn('Failed to load project state:', error);
+      return null;
+    }
+  }
+  
+  static clearProject(): void {
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.removeItem(this.STORAGE_KEY);
+      }
+      if (typeof sessionStorage !== 'undefined') {
+        sessionStorage.removeItem(this.STORAGE_KEY);
+      }
+      
+      // Clear URL params
+      const url = new URL(window.location.href);
+      url.searchParams.delete('project');
+      url.searchParams.delete('name');
+      window.history.replaceState({}, '', url.pathname);
+    } catch (error) {
+      console.warn('Failed to clear project state:', error);
+    }
+  }
+}
+
+// Toggle Switch Component
+const ToggleSwitch: React.FC<{ 
+  checked: boolean; 
+  onChange: (checked: boolean) => void; 
+  disabled?: boolean;
+  label: string;
+  description: string;
+}> = ({ checked, onChange, disabled, label, description }) => (
+  <div className="flex items-start space-x-3 p-4 bg-green-900/20 border border-green-800/50 rounded-xl">
+    <div className="flex items-center">
+      <button
+        type="button"
+        className={`${
+          checked ? 'bg-green-600' : 'bg-gray-600'
+        } relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 focus:ring-offset-gray-900 disabled:opacity-50 disabled:cursor-not-allowed`}
+        role="switch"
+        aria-checked={checked}
+        onClick={() => !disabled && onChange(!checked)}
+        disabled={disabled}
+      >
+        <span
+          className={`${
+            checked ? 'translate-x-5' : 'translate-x-0'
+          } pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out`}
+        />
+      </button>
+    </div>
+    <div className="flex-1">
+      <span className="text-sm font-medium text-green-300">{label}</span>
+      <p className="text-xs text-green-200 mt-1">{description}</p>
+    </div>
+  </div>
+);
 
 export const MainTts: React.FC = () => {
     const { mainText, setMainText, mainSelectedVoice, setMainSelectedVoice, temperature, setTemperature, topP, setTopP, setShowTtsGuide } = useAudioContext();
@@ -19,18 +142,54 @@ export const MainTts: React.FC = () => {
     const [error, setError] = useState<string | null>(null);
     const [audioName, setAudioName] = useState('');
     const [regeneratingChunks, setRegeneratingChunks] = useState<Set<number>>(new Set());
+    const [autoNormalize, setAutoNormalize] = useState(true);
+    const [isCheckingActiveProjects, setIsCheckingActiveProjects] = useState(true);
     const { voices, isLoadingVoices } = useVoices();
     const pollingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
+    // Check for active projects on mount
     useEffect(() => {
-        const activeProjectId = localStorage.getItem('activeProjectId');
-        const activeProjectName = localStorage.getItem('activeProjectName');
-        if (activeProjectId) {
-            console.log("Resuming project:", activeProjectId);
-            setAudioName(activeProjectName || '');
-            setIsProcessing(true);
-            pollProjectStatus(activeProjectId);
-        }
+        const checkForActiveProject = async () => {
+            try {
+                // First check URL params and storage
+                const savedProject = ProjectStateManager.loadProject();
+                if (savedProject) {
+                    console.log("Resuming project from storage:", savedProject.projectId);
+                    setAudioName(savedProject.projectName);
+                    setIsProcessing(true);
+                    pollProjectStatus(savedProject.projectId);
+                    return;
+                }
+
+                // If no stored project, check server for any active projects
+                // This prevents accidental new projects in incognito mode
+                try {
+                    const response = await fetch('/api/active-projects');
+                    if (response.ok) {
+                        const activeProjects = await response.json();
+                        if (activeProjects.length > 0) {
+                            const activeProject = activeProjects[0];
+                            console.log("Found active project on server:", activeProject.id);
+                            
+                            // Update URL and storage with found project
+                            ProjectStateManager.saveProject(activeProject.id, activeProject.name || 'Recovered Project');
+                            setAudioName(activeProject.name || 'Recovered Project');
+                            setIsProcessing(true);
+                            pollProjectStatus(activeProject.id);
+                            return;
+                        }
+                    }
+                } catch (serverError) {
+                    console.log("No active projects endpoint available");
+                }
+            } catch (error) {
+                console.warn("Error checking for active project:", error);
+            } finally {
+                setIsCheckingActiveProjects(false);
+            }
+        };
+
+        checkForActiveProject();
     }, []);
 
     const stopPolling = () => {
@@ -42,8 +201,7 @@ export const MainTts: React.FC = () => {
 
     const cleanupSession = () => {
         stopPolling();
-        localStorage.removeItem('activeProjectId');
-        localStorage.removeItem('activeProjectName');
+        ProjectStateManager.clearProject();
         setProject(null);
         setAudioName('');
         setRegeneratingChunks(new Set());
@@ -55,11 +213,11 @@ export const MainTts: React.FC = () => {
             return; 
         }
     
-        const oldProjectId = localStorage.getItem('activeProjectId');
-        if (oldProjectId) {
+        const oldProject = ProjectStateManager.loadProject();
+        if (oldProject) {
             try {
-                console.log(`Cleaning up previous project: ${oldProjectId}`);
-                await audioService.cleanupProject(oldProjectId);
+                console.log(`Cleaning up previous project: ${oldProject.projectId}`);
+                await audioService.cleanupProject(oldProject.projectId);
             } catch (cleanupErr) {
                 console.error("Failed to clean up previous project:", cleanupErr);
             }
@@ -71,10 +229,14 @@ export const MainTts: React.FC = () => {
         setProject(null);
     
         try {
-            const { project_id } = await audioService.startProject(mainText, mainSelectedVoice.id, temperature, topP);
-            localStorage.setItem('activeProjectId', project_id);
-            localStorage.setItem('activeProjectName', audioName);
-            pollProjectStatus(project_id);
+            const response = await audioService.startProject(mainText, mainSelectedVoice.id, temperature, topP, autoNormalize);
+            ProjectStateManager.saveProject(response.project_id, audioName);
+            
+            if (response.was_normalized) {
+                console.log("Text was automatically normalized for optimal TTS generation");
+            }
+            
+            pollProjectStatus(response.project_id);
         } catch (err) {
             console.error('Project start error:', err);
             setError('Failed to start project. Please try again.');
@@ -85,12 +247,10 @@ export const MainTts: React.FC = () => {
     const pollProjectStatus = useCallback(async (projectId: string) => {
         try {
             const data = await audioService.getProjectStatus(projectId);
-            const currentProjectName = localStorage.getItem('activeProjectName') || audioName;
+            const currentProjectName = ProjectStateManager.loadProject()?.projectName || audioName;
             
-            // Update project state
             setProject({ ...data, audioName: currentProjectName });
             
-            // Update regenerating chunks state based on actual backend status
             setRegeneratingChunks(prevSet => {
                 const newSet = new Set<number>();
                 data.chunks.forEach((chunk: Chunk, index: number) => {
@@ -175,6 +335,16 @@ export const MainTts: React.FC = () => {
         }
     };
 
+    const handleDownloadNormalizedText = async () => {
+        if (!project?.was_normalized) return;
+        try {
+            await audioService.downloadNormalizedText(project.id, `${project.audioName || 'project'}_normalized.txt`);
+        } catch (err) {
+            console.error('Failed to download normalized text:', err);
+            setError('Failed to download normalized text.');
+        }
+    };
+
     const handleRegenerate = async (chunkIndex: number) => {
         if (!project) return;
         
@@ -200,6 +370,17 @@ export const MainTts: React.FC = () => {
         }
     };
 
+    if (isCheckingActiveProjects) {
+        return (
+            <Card gradient className="p-6 md:p-8">
+                <div className="flex items-center justify-center space-y-4 py-12">
+                    <Spinner size="lg" />
+                    <p className="text-gray-400">Checking for active projects...</p>
+                </div>
+            </Card>
+        );
+    }
+
     return (
         <Card gradient className="p-6 md:p-8">
             <div className="space-y-6">
@@ -209,15 +390,7 @@ export const MainTts: React.FC = () => {
                         <p className="text-gray-400 text-sm">Generate long-form audio with chunk-by-chunk review</p>
                     </div>
                 </div>
-                <div className="p-4 bg-blue-900/20 border border-blue-800/50 rounded-xl">
-                    <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-                        <div>
-                            <h4 className="font-semibold text-blue-300 mb-1">📝 Format Your Script</h4>
-                            <p className="text-sm text-blue-200">Use our guide to prevent issues with pronunciation and formatting.</p>
-                        </div>
-                        <Button variant="secondary" size="sm" onClick={() => setShowTtsGuide(true)}>View Guide</Button>
-                    </div>
-                </div>
+                
                 {!project ? (
                     <div className="space-y-6">
                         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -247,6 +420,29 @@ export const MainTts: React.FC = () => {
                                 </div>
                             </div>
                         </div>
+
+                        <div className="space-y-4">
+                            <ToggleSwitch
+                                checked={autoNormalize}
+                                onChange={setAutoNormalize}
+                                disabled={isProcessing}
+                                label="Smart Text Optimization (Recommended)"
+                                description="Automatically fixes pronunciations, numbers, and formatting to prevent gibberish and audio errors (~$0.02 cost)"
+                            />
+                            
+                            {!autoNormalize && (
+                                <div className="p-4 bg-blue-900/20 border border-blue-800/50 rounded-xl">
+                                    <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                                        <div>
+                                            <h4 className="font-semibold text-blue-300 mb-1">Manual Script Preparation</h4>
+                                            <p className="text-sm text-blue-200">Since auto-optimization is disabled, use our guide to manually format your script for best results.</p>
+                                        </div>
+                                        <Button variant="secondary" size="sm" onClick={() => setShowTtsGuide(true)}>View Guide</Button>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
                         <div>
                             <label className="block text-sm font-medium text-gray-300 mb-2">Your Script</label>
                             <textarea className="w-full p-4 bg-gray-800/50 border border-gray-700 rounded-xl text-gray-100 placeholder-gray-500 focus:ring-2 focus:ring-blue-500" rows={12} placeholder="Paste your script here..." value={mainText} onChange={(e) => setMainText(e.target.value)} disabled={isProcessing} />
@@ -260,6 +456,7 @@ export const MainTts: React.FC = () => {
                         onRegenerate={handleRegenerate} 
                         onStitch={handleStitch} 
                         onDownload={handleDownloadFinal} 
+                        onDownloadNormalizedText={handleDownloadNormalizedText}
                         onCancel={handleCancel} 
                         onNewProject={cleanupSession} 
                         isProcessing={isProcessing} 
@@ -278,12 +475,13 @@ const ProjectView: React.FC<{
     onRegenerate: (index: number) => void; 
     onStitch: () => void; 
     onDownload: () => void; 
+    onDownloadNormalizedText: () => void;
     onCancel: () => void; 
     onNewProject: () => void; 
     isProcessing: boolean; 
     isCancelling: boolean;
     regeneratingChunks: Set<number>;
-}> = ({ project, onRegenerate, onStitch, onDownload, onCancel, onNewProject, isProcessing, isCancelling, regeneratingChunks }) => {
+}> = ({ project, onRegenerate, onStitch, onDownload, onDownloadNormalizedText, onCancel, onNewProject, isProcessing, isCancelling, regeneratingChunks }) => {
     const allChunksDone = project.chunks.every(c => c.status === 'completed');
     const hasProgress = project.progress_percent !== undefined;
     const isProjectActive = ['processing', 'pending', 'cancelling'].includes(project.status || '');
@@ -295,6 +493,9 @@ const ProjectView: React.FC<{
                     <div>
                         <h3 className="font-semibold text-white">Project: <span className="text-blue-400">{project.audioName}</span></h3>
                         <p className="text-xs text-gray-500 font-mono">{project.id}</p>
+                        {project.was_normalized && (
+                            <p className="text-xs text-green-400 mt-1">Text was optimized for TTS</p>
+                        )}
                     </div>
                     {isProjectActive && (<Button variant="danger" size="sm" onClick={onCancel} isLoading={isCancelling} disabled={isCancelling}><IconX className="w-4 h-4 mr-2" />Cancel Project</Button>)}
                 </div>
@@ -319,11 +520,17 @@ const ProjectView: React.FC<{
                     />
                 ))}
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
                 <Button variant="ghost" size="lg" fullWidth onClick={onNewProject} disabled={isProcessing || isCancelling}>
                     <IconRefreshCw className="w-5 h-5 mr-2" />
                     New Project
                 </Button>
+                {project.was_normalized && (
+                    <Button variant="ghost" size="lg" fullWidth onClick={onDownloadNormalizedText} disabled={isProcessing || isCancelling}>
+                        <IconFileText className="w-5 h-5 mr-2" />
+                        Script
+                    </Button>
+                )}
                 <Button variant="secondary" size="lg" fullWidth onClick={onDownload} disabled={!allChunksDone || isProcessing || isCancelling}>
                     <IconDownload className="w-5 h-5 mr-2" />
                     Download

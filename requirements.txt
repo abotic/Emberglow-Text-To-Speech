@@ -26,3 +26,4 @@ fastapi
 uvicorn[standard]
 python-multipart
 soundfile
+openai>=1.0.0

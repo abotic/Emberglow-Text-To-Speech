@@ -3,7 +3,10 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTa
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 import torch
+import openai
+import asyncio
 import soundfile as sf
 import os
 import uuid
@@ -11,7 +14,7 @@ import json
 import base64
 import re
 import numpy as np
-from typing import Dict
+from typing import Dict, List
 import time
 from datetime import datetime
 import shutil
@@ -39,6 +42,14 @@ def save_audio_metadata():
 app = FastAPI(title="Higgs Audio Generation API")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
+# --- OpenAI Client Configuration ---
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+if OPENAI_API_KEY:
+    openai_client = openai.AsyncOpenAI(api_key=OPENAI_API_KEY)
+else:
+    openai_client = None
+    print("Warning: OPENAI_API_KEY not set. Text normalization will be disabled.")
+
 # --- Model Initialization ---
 print("Initializing HiggsAudioServeEngine...")
 if torch.cuda.is_available():
@@ -58,15 +69,110 @@ serve_engine = HiggsAudioServeEngine("bosonai/higgs-audio-v2-generation-3B-base"
 print(f"Model loaded and running on device: {serve_engine.device}")
 
 # --- Helper Functions ---
+TTS_NORMALIZATION_PROMPT = """You are a master scriptwriter and editor specializing in creating content for Text-to-Speech (TTS) engines. Your sole purpose is to produce text that is perfectly clear, unambiguous, and effortless for an AI voice to narrate.
+You will operate according to the following **Core Narration Rules** at all times.
+
+## Core Narration Rules
+1. **Simplify Punctuation & Formatting:**
+   * **Use only:** Periods (.), commas (,), question marks (?), and exclamation marks (!).
+   * **Strictly forbid:** Semicolons (;), em-dashes (—), ellipses (...), and colons (:).
+   * **For dialogue:** Use only double quotes (" "). Never use single quotes.
+   * **Normalize Case:** Convert all text to standard sentence case. Do not use ALL CAPS for emphasis.
+   * **Contractions:** Expand all contractions (e.g., "It's" → "It is"; "don't" → "do not").
+
+2. **Spell Everything Out (No Ambiguity):**
+   * **Numbers:** Write all numbers out as words (e.g., "twenty twenty-five" not "2025"; "three point one four" not "3.14").
+   * **Symbols & Currency:** Convert all symbols into their full word form (e.g., "percent" not "%"; "dollars" not "$"; "at" not "@").
+   * **Abbreviations:** Expand all abbreviations into their full form (e.g., "et cetera" not "etc."; "versus" not "vs.").
+   * **Units:** Expand all units of measurement (e.g., "kilometers" not "km"; "pounds" not "lbs"; "degrees Celsius" not "°C").
+   * **Time & Dates:** Convert all time/date formats to words (e.g., "three thirty in the afternoon" not "3:30 PM"; "December first" not "12/1").
+   * **Ordinals:** Write out ordinal numbers (e.g., "first" not "1st"; "twenty third" not "23rd").
+   * **Slashes & Special Characters:** Convert "/" to "or", "&" to "and", "#" to "hashtag", "-" in URLs to "hyphen".
+   * **Fractions:** Write as words (e.g., "one half" not "1/2"; "three quarters" not "3/4").
+
+3. **Clarify Pronunciations:**
+   * **Acronyms:** Decide on a single pronunciation. Write "N. A. S. A." if it should be spelled out, or "Nasa" if it should be pronounced as a single word.
+   * **Foreign Words & Accented Characters:** Replace ALL words with accents, tildes, or non-English characters with phonetic spelling including foreign place names:
+     - "résumé" → "rez oo may"
+     - "café" → "ka fay" 
+     - "São Paulo" → "sao pow lo"
+     - "München" → "mun ikh"
+     - "jalapeño" → "ha la pen yo"
+     - "naïve" → "nah eev"
+   * **Titles & Complex Abbreviations:** Fully expand titles and multi-part abbreviations:
+     - "C.E.O." → "Chief Executive Officer"
+     - "Dr." → "Doctor"  
+     - "U.S.A." → "United States of America"
+     - "U.K." → "United Kingdom"
+   * **Difficult Words:** Replace ANY word containing accents, foreign characters, technical terms, or non-obvious English pronunciation with simplified phonetic spelling. Use simple spaces to separate syllables. Do not use hyphens.
+   * **Homographs:** Choose the most likely pronunciation and clarify context if needed (e.g., "read the book" vs "I read it yesterday").
+   * **URLs/Emails:** Convert to readable format (e.g., "www dot example dot com"; "john at company dot com"; "resume hyphen builders dot com").
+
+4. **Optimize Sentence Structure:**
+   * Write in clear, direct sentences.
+   * Avoid long, complex sentences with multiple clauses. If a sentence feels too long, break it into two or more shorter sentences.
+   * **Parentheticals:** Fully integrate any text within parentheses into the main sentences, removing the parentheses themselves.
+   * **Mathematical/Chemical expressions:** Spell out each element, number, and symbol completely:
+     - "H₂SO₄" → "H two S O four"
+     - "CO₂" → "C O two" 
+     - "2H⁺" → "two H plus"
+     - "→" → "yields" or "becomes"
+     - "=" → "equals"
+
+## Your Task Modes
+**Mode 1: Script Conversion (If I provide text)**
+If I give you a block of existing text, your task is a **verbatim transformation**.
+* **Prime Directive:** Your absolute highest priority is the **word-for-word preservation** of the original text. You must not add, omit, summarize, or paraphrase any word for any reason. The word count of your output must exactly match the word count of the original text.
+* **Your Only Job:** Apply the **Core Narration Rules** to format the existing words. All rules are secondary to the Prime Directive.
+* **Output:** Your final output must be **only the clean, ready-to-narrate script**.
+
+**Mode 2: Script Generation (If I ask for new content)**
+If I ask you to write a story, script, or any other new content, you must generate it from scratch while **natively following all Core Narration Rules as you write**. The entire creative output must be born ready for TTS narration.
+* **Ensure a Clean Finish:** When generating new content, the very last sentence of the entire script must provide a clear and conclusive ending. This helps prevent the AI from adding extra sounds after the final word.
+
+Determine the correct mode from my instructions and proceed."""
+
+async def normalize_text_with_openai(text: str) -> str:
+    """Normalize text using OpenAI GPT-4o-mini for optimal TTS generation."""
+    if not openai_client:
+        print("OpenAI client not configured, returning original text")
+        return text
+    
+    try:
+        print(f"Normalizing text with OpenAI (length: {len(text)} characters)")
+        
+        response = await openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": TTS_NORMALIZATION_PROMPT},
+                {"role": "user", "content": text}
+            ],
+            temperature=0.1,  # Low temperature for consistency
+            max_tokens=len(text.split()) * 2 + 500 # Allow room for expansion
+        )
+        
+        normalized_text = response.choices[0].message.content.strip()
+        print(f"Text normalization completed (new length: {len(normalized_text)} characters)")
+        return normalized_text
+        
+    except Exception as e:
+        print(f"OpenAI normalization failed: {e}")
+        return text  # Fallback to original text
+
 def normalize_text_for_tts(text: str) -> str: return re.sub(r'\s+', ' ', text).strip()
 
 def split_text_into_chunks(text: str, words_per_chunk: int = 100):
-    sentences, chunks, current_chunk = re.split(r'(?<=[.?!])\s+', text), [], ""
+    sentences = re.split(r'(?<=[.?!])\s+', text)
+    chunks = []
+    current_chunk = ""
     for sentence in sentences:
         if len(current_chunk.split()) + len(sentence.split()) > words_per_chunk and current_chunk:
-            chunks.append(current_chunk.strip()); current_chunk = sentence
-        else: current_chunk = (current_chunk + " " + sentence).strip()
-    if current_chunk: chunks.append(current_chunk.strip())
+            chunks.append(current_chunk.strip())
+            current_chunk = sentence
+        else:
+            current_chunk = (current_chunk + " " + sentence).strip()
+    if current_chunk:
+        chunks.append(current_chunk.strip())
     return [c for c in chunks if c]
 
 def update_project_progress(project: Dict):
@@ -107,10 +213,7 @@ def get_context_messages(project, chunk_index: int = 0):
     is_smart_voice = project.get("is_smart_voice", False)
     
     if is_smart_voice:
-        # For smart voice, use the first completed chunk as reference (if available)
-        # or the stored voice_ref_path for chunk 0 after it's completed
         if chunk_index == 0:
-            # For first chunk, check if we have a stored reference from previous generation
             ref_path = project.get("voice_ref_path")
             if ref_path and os.path.exists(ref_path):
                 with open(ref_path, "rb") as audio_file:
@@ -118,7 +221,6 @@ def get_context_messages(project, chunk_index: int = 0):
                 context_messages = [Message(role="user", content="Reference audio"), 
                                   Message(role="assistant", content=AudioContent(raw_audio=audio_base64, audio_url="placeholder"))]
         else:
-            # For subsequent chunks, use the first chunk as reference
             first_chunk = project['chunks'][0]
             if first_chunk.get('status') == 'completed' and first_chunk.get('audio_filename'):
                 first_chunk_path = os.path.join(STORAGE_DIR, first_chunk['audio_filename'])
@@ -128,7 +230,6 @@ def get_context_messages(project, chunk_index: int = 0):
                     context_messages = [Message(role="user", content="Reference audio"), 
                                       Message(role="assistant", content=AudioContent(raw_audio=audio_base64, audio_url="placeholder"))]
     else:
-        # For regular cloned voices, use the original voice file
         if ref_path := project.get("voice_ref_path"):
             if os.path.exists(ref_path):
                 with open(ref_path, "rb") as audio_file:
@@ -140,42 +241,32 @@ def get_context_messages(project, chunk_index: int = 0):
 
 def process_project_generation(project_id: str):
     project_path = os.path.join(PROJECTS_DIR, f"{project_id}.json")
-
     try:
-        with open(project_path, 'r') as f:
-            project = json.load(f)
+        with open(project_path, 'r') as f: project = json.load(f)
 
         num_chunks = len(project.get('chunks', []))
         is_smart_voice = project.get("is_smart_voice", False)
 
         for i in range(num_chunks):
-            # Check for cancellation before starting work on a chunk
             with open(project_path, 'r') as f:
-                current_status = json.load(f).get('status')
-            if current_status == 'cancelling':
-                print(f"Cancellation detected for project {project_id}. Stopping.")
-                cleanup_project_data(project_id)
-                return
+                if json.load(f).get('status') == 'cancelling':
+                    print(f"Cancellation detected for project {project_id}. Stopping.")
+                    cleanup_project_data(project_id)
+                    return
 
             chunk = project['chunks'][i]
-            if chunk.get('status') == 'completed':
-                continue
+            if chunk.get('status') == 'completed': continue
 
             print(f"Starting generation for chunk {i+1}/{num_chunks} of project {project_id}")
-            
-            # Update the status of the chunk IN MEMORY
             chunk.update({'status': 'processing', 'start_time': time.time()})
 
             try:
-                # Get appropriate context messages for this chunk
                 context_messages = get_context_messages(project, i)
-                
                 audio_data = generate_single_chunk(chunk['text'], project['params']['temperature'], project['params']['top_p'], context_messages)
                 chunk_filename = f"{project_id}_chunk_{i}.wav"
                 sf.write(os.path.join(STORAGE_DIR, chunk_filename), audio_data, serve_engine.audio_tokenizer.sampling_rate)
                 chunk.update({'status': 'completed', 'audio_filename': chunk_filename})
 
-                # For smart voice, update the reference path after first chunk
                 if i == 0 and is_smart_voice:
                     project["voice_ref_path"] = os.path.join(STORAGE_DIR, chunk_filename)
 
@@ -187,24 +278,20 @@ def process_project_generation(project_id: str):
                 chunk['elapsed_time'] = time.time() - chunk.get('start_time', time.time())
                 update_project_progress(project)
                 
-                # Before writing, quickly check the on-disk status to avoid overwriting a cancellation.
                 with open(project_path, 'r') as f:
                     if json.load(f).get('status') == 'cancelling':
                         project['status'] = 'cancelling'
 
-                with open(project_path, 'w') as f:
-                    json.dump(project, f, indent=2)
+                with open(project_path, 'w') as f: json.dump(project, f, indent=2)
 
         if all(c['status'] == 'completed' for c in project['chunks']):
             project['status'] = 'completed'
         else:
             project['status'] = 'review'
         
-        with open(project_path, 'w') as f:
-            json.dump(project, f, indent=2)
+        with open(project_path, 'w') as f: json.dump(project, f, indent=2)
         print(f"Generation for {project_id} finished with status: {project['status']}")
 
-    # This is the main safety net. If anything outside the loop fails, this will catch it.
     except Exception as e:
         print(f"FATAL ERROR processing project {project_id}: {e}")
         try:
@@ -215,48 +302,24 @@ def process_project_generation(project_id: str):
                 f.seek(0)
                 json.dump(project_data, f, indent=2)
                 f.truncate()
-        except Exception as write_error:
-            print(f"Could not write failure status to project file {project_id}: {write_error}")
+        except Exception as write_error: print(f"Could not write failure status to project file {project_id}: {write_error}")
 
 def regenerate_single_chunk_task(project_id: str, chunk_index: int):
     project_path = os.path.join(PROJECTS_DIR, f"{project_id}.json")
-
     try:
-        with open(project_path, 'r') as f:
-            project = json.load(f)
+        with open(project_path, 'r') as f: project = json.load(f)
 
         chunk = project['chunks'][chunk_index]
-
         context_messages = get_context_messages(project, chunk_index)
         is_smart = project.get("is_smart_voice", False)
         
-        if not is_smart or (is_smart and chunk_index == 0):
-            if ref_path := project.get("voice_ref_path"):
-                if os.path.exists(ref_path):
-                    with open(ref_path, "rb") as audio_file:
-                        audio_base64 = base64.b64encode(audio_file.read()).decode('utf-8')
-                    context_messages = [Message(role="user", content="This is reference audio for voice cloning."), Message(role="assistant", content=AudioContent(raw_audio=audio_base64, audio_url="placeholder"))]
-        
-        elif is_smart and chunk_index > 0:
-            chunk_0_path = project.get("voice_ref_path") 
-            if chunk_0_path and os.path.exists(chunk_0_path):
-                with open(chunk_0_path, "rb") as audio_file:
-                    audio_base64 = base64.b64encode(audio_file.read()).decode('utf-8')
-                context_messages = [Message(role="user", content="This is reference audio for voice cloning."), Message(role="assistant", content=AudioContent(raw_audio=audio_base64, audio_url="placeholder"))]
-
         if old_filename := chunk.get('audio_filename'):
             old_filepath = os.path.join(STORAGE_DIR, old_filename)
             if os.path.exists(old_filepath):
-                try:
-                    os.remove(old_filepath)
-                    print(f"Deleted old chunk file: {old_filepath}")
-                except OSError as e:
-                    print(f"Error deleting old file {old_filepath}: {e}")
+                try: os.remove(old_filepath); print(f"Deleted old chunk file: {old_filepath}")
+                except OSError as e: print(f"Error deleting old file {old_filepath}: {e}")
         
-        chunk.update({
-            'status': 'processing', 'start_time': time.time(),
-            'error': None, 'audio_filename': None
-        })
+        chunk.update({'status': 'processing', 'start_time': time.time(), 'error': None, 'audio_filename': None})
         with open(project_path, 'w') as f: json.dump(project, f, indent=2)
 
         try:
@@ -279,7 +342,6 @@ def regenerate_single_chunk_task(project_id: str, chunk_index: int):
             with open(project_path, 'w') as f: json.dump(project, f, indent=2)
             print(f"Regeneration for chunk {chunk_index} finished with status: {chunk['status']}")
 
-    # Catches any fatal error (e.g., initial file read fails) and prevents a "zombie" process
     except Exception as e:
         print(f"FATAL ERROR during regeneration for project {project_id}: {e}")
         try:
@@ -292,8 +354,7 @@ def regenerate_single_chunk_task(project_id: str, chunk_index: int):
                 f.seek(0)
                 json.dump(project_data, f, indent=2)
                 f.truncate()
-        except Exception as write_error:
-            print(f"Could not write failure status to project file {project_id}: {write_error}")
+        except Exception as write_error: print(f"Could not write failure status to project file {project_id}: {write_error}")
 
 def stitch_project_audio_internal(project_id: str) -> str:
     project_path = os.path.join(PROJECTS_DIR, f"{project_id}.json")
@@ -311,16 +372,52 @@ def stitch_project_audio_internal(project_id: str) -> str:
 
 # --- API Endpoints ---
 @app.post("/project", status_code=202, tags=["Project"])
-async def create_project(background_tasks: BackgroundTasks, text: str = Form(...), voice_id: str = Form(...), temperature: float = Form(0.2), top_p: float = Form(0.95)):
+async def create_project(
+    background_tasks: BackgroundTasks, 
+    text: str = Form(...), 
+    voice_id: str = Form(...), 
+    temperature: float = Form(0.2), 
+    top_p: float = Form(0.95),
+    auto_normalize: bool = Form(True)
+):
     project_id = f"proj_{uuid.uuid4().hex}"
+    
+    processed_text = text
+    was_normalized = False
+    
+    if auto_normalize and openai_client:
+        print(f"Auto-normalizing text for project {project_id}")
+        normalized_text = await normalize_text_with_openai(text)
+        if normalized_text != text:
+            processed_text = normalized_text
+            was_normalized = True
+            print(f"Text normalization completed for project {project_id}")
+        else:
+            print(f"Text was already normalized for project {project_id}")
+    
     voice_ref_path = None
     if voice_id != "smart_voice":
         voice_ref_path = os.path.join(CLONED_VOICES_DIR, f"{voice_id}.wav")
-        if not os.path.exists(voice_ref_path): raise HTTPException(status_code=404, detail="Cloned voice sample not found.")
-    project_data = {"id": project_id, "status": "pending", "params": {"temperature": temperature, "top_p": top_p}, "chunks": [{"index": i, "text": chunk, "status": "pending"} for i, chunk in enumerate(split_text_into_chunks(normalize_text_for_tts(text)))], "voice_ref_path": voice_ref_path, "is_smart_voice": (voice_id == "smart_voice")}
-    with open(os.path.join(PROJECTS_DIR, f"{project_id}.json"), 'w') as f: json.dump(project_data, f, indent=2)
+        if not os.path.exists(voice_ref_path): 
+            raise HTTPException(status_code=404, detail="Cloned voice sample not found.")
+            
+    project_data = {
+        "id": project_id, 
+        "status": "pending", 
+        "params": {"temperature": temperature, "top_p": top_p}, 
+        "chunks": [{"index": i, "text": chunk, "status": "pending"} 
+                   for i, chunk in enumerate(split_text_into_chunks(normalize_text_for_tts(processed_text)))], 
+        "voice_ref_path": voice_ref_path, 
+        "is_smart_voice": (voice_id == "smart_voice"),
+        "was_normalized": was_normalized,
+        "normalized_text": processed_text if was_normalized else None,
+    }
+    
+    with open(os.path.join(PROJECTS_DIR, f"{project_id}.json"), 'w') as f: 
+        json.dump(project_data, f, indent=2)
+        
     background_tasks.add_task(process_project_generation, project_id)
-    return {"project_id": project_id, "status": "processing"}
+    return {"project_id": project_id, "status": "processing", "was_normalized": was_normalized}
 
 @app.get("/project/{project_id}", tags=["Project"])
 async def get_project_status(project_id: str):
@@ -332,7 +429,6 @@ async def get_project_status(project_id: str):
             project_data = json.load(f)
         return project_data
     except json.JSONDecodeError:
-        # This handles the rare case where the file is being written at this exact moment.
         raise HTTPException(status_code=503, detail="Project file is currently being updated. Please try again.")
 
 @app.post("/project/{project_id}/stitch", tags=["Project"])
@@ -342,14 +438,50 @@ async def stitch_project_audio(project_id: str, background_tasks: BackgroundTask
         return {"final_audio_filename": final_filename}
     except (ValueError, FileNotFoundError) as e: raise HTTPException(status_code=400, detail=str(e))
 
-@app.post("/project/{project_id}/cleanup", status_code=200, tags=["Project"])
-async def cleanup_project(project_id: str, background_tasks: BackgroundTasks):
-    """
-    Triggers a background task to delete a project's associated chunk files and metadata.
-    """
+@app.get("/active-projects", tags=["Project"]) 
+async def get_active_projects():
+    active_projects = []
+    try:
+        for filename in os.listdir(PROJECTS_DIR):
+            if filename.endswith('.json'):
+                with open(os.path.join(PROJECTS_DIR, filename), 'r') as f:
+                    project = json.load(f)
+                    if project.get('status') in ['pending', 'processing']:
+                        active_projects.append({
+                            'id': project['id'],
+                            'name': project.get('name', 'Unnamed Project'),
+                            'status': project['status']
+                        })
+    except Exception as e:
+        print(f"Error checking active projects: {e}")
+    return active_projects
+
+@app.get("/project/{project_id}/normalized-text", tags=["Project"])
+async def get_normalized_text(project_id: str):
     project_path = os.path.join(PROJECTS_DIR, f"{project_id}.json")
     if not os.path.exists(project_path):
-        # It's okay if the project is already gone. Return success.
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    with open(project_path, 'r') as f:
+        project = json.load(f)
+    
+    if not project.get('was_normalized'):
+        raise HTTPException(status_code=404, detail="No normalized text available")
+    
+    normalized_text = project.get('normalized_text', '')
+    if not normalized_text:
+        raise HTTPException(status_code=404, detail="Normalized text not found")
+    
+    return Response(
+        content=normalized_text,
+        media_type="text/plain",
+        headers={"Content-Disposition": f'attachment; filename="{project_id}_normalized.txt"'}
+    )
+
+@app.post("/project/{project_id}/cleanup", status_code=200, tags=["Project"])
+async def cleanup_project(project_id: str, background_tasks: BackgroundTasks):
+    project_path = os.path.join(PROJECTS_DIR, f"{project_id}.json")
+    if not os.path.exists(project_path):
         return {"message": "Project not found, no action taken."}
     
     background_tasks.add_task(cleanup_project_data, project_id)
@@ -382,8 +514,17 @@ async def regenerate_chunk_endpoint(project_id: str, chunk_index: int, backgroun
 @app.get("/voices", tags=["Voices"])
 async def get_voices():
     default_voices = [{"id": "smart_voice", "name": "Smart Voice (Auto)"}]
-    cloned_voices = [json.load(open(os.path.join(CLONED_VOICES_DIR, f))) for f in os.listdir(CLONED_VOICES_DIR) if f.endswith(".json")]
-    return default_voices + cloned_voices
+    cloned_voices_list = []
+    if os.path.exists(CLONED_VOICES_DIR):
+        for f in os.listdir(CLONED_VOICES_DIR):
+            if f.endswith(".json"):
+                try:
+                    with open(os.path.join(CLONED_VOICES_DIR, f), 'r') as json_file:
+                        cloned_voices_list.append(json.load(json_file))
+                except Exception as e:
+                    print(f"Could not load voice metadata from {f}: {e}")
+    return default_voices + cloned_voices_list
+
 
 @app.post("/clone-voice", tags=["Voices"])
 async def clone_voice(voice_sample: UploadFile = File(...), voice_name: str = Form(...)):
