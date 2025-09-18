@@ -13,125 +13,123 @@ interface Chunk { index: number; text: string; status: 'pending' | 'processing' 
 
 // Enhanced storage utility for mobile reliability
 class ProjectStateManager {
-  private static STORAGE_KEY = 'activeProject';
-  
-  static saveProject(projectId: string, projectName: string): boolean {
-    const data = { projectId, projectName, timestamp: Date.now() };
-    
-    try {
-      // Try multiple storage methods
-      if (typeof localStorage !== 'undefined') {
-        localStorage.setItem(this.STORAGE_KEY, JSON.stringify(data));
-      }
-      if (typeof sessionStorage !== 'undefined') {
-        sessionStorage.setItem(this.STORAGE_KEY, JSON.stringify(data));
-      }
-      // Also store in URL params for mobile reliability
-      const url = new URL(window.location.href);
-      url.searchParams.set('project', projectId);
-      url.searchParams.set('name', encodeURIComponent(projectName));
-      window.history.replaceState({}, '', url.toString());
-      
-      return true;
-    } catch (error) {
-      console.warn('Failed to save project state:', error);
-      return false;
-    }
-  }
-  
-  static loadProject(): { projectId: string; projectName: string } | null {
-    try {
-      // Try URL params first (most reliable on mobile)
-      const urlParams = new URLSearchParams(window.location.search);
-      const projectFromUrl = urlParams.get('project');
-      const nameFromUrl = urlParams.get('name');
-      
-      if (projectFromUrl && nameFromUrl) {
-        return { 
-          projectId: projectFromUrl, 
-          projectName: decodeURIComponent(nameFromUrl) 
-        };
-      }
-      
-      // Fallback to storage
-      let data = null;
-      if (typeof localStorage !== 'undefined') {
-        data = localStorage.getItem(this.STORAGE_KEY);
-      }
-      if (!data && typeof sessionStorage !== 'undefined') {
-        data = sessionStorage.getItem(this.STORAGE_KEY);
-      }
-      
-      if (data) {
-        const parsed = JSON.parse(data);
-        // Check if data is recent (within 24 hours)
-        if (Date.now() - parsed.timestamp < 24 * 60 * 60 * 1000) {
-          return { 
-            projectId: parsed.projectId, 
-            projectName: parsed.projectName 
-          };
+    private static STORAGE_KEY = 'activeProject';
+
+    static saveProject(projectId: string, projectName: string): boolean {
+        const data = { projectId, projectName, timestamp: Date.now() };
+
+        try {
+            // Try multiple storage methods
+            if (typeof localStorage !== 'undefined') {
+                localStorage.setItem(this.STORAGE_KEY, JSON.stringify(data));
+            }
+            if (typeof sessionStorage !== 'undefined') {
+                sessionStorage.setItem(this.STORAGE_KEY, JSON.stringify(data));
+            }
+            // Also store in URL params for mobile reliability
+            const url = new URL(window.location.href);
+            url.searchParams.set('project', projectId);
+            url.searchParams.set('name', encodeURIComponent(projectName));
+            window.history.replaceState({}, '', url.toString());
+
+            return true;
+        } catch (error) {
+            console.warn('Failed to save project state:', error);
+            return false;
         }
-      }
-      
-      return null;
-    } catch (error) {
-      console.warn('Failed to load project state:', error);
-      return null;
     }
-  }
-  
-  static clearProject(): void {
-    try {
-      if (typeof localStorage !== 'undefined') {
-        localStorage.removeItem(this.STORAGE_KEY);
-      }
-      if (typeof sessionStorage !== 'undefined') {
-        sessionStorage.removeItem(this.STORAGE_KEY);
-      }
-      
-      // Clear URL params
-      const url = new URL(window.location.href);
-      url.searchParams.delete('project');
-      url.searchParams.delete('name');
-      window.history.replaceState({}, '', url.pathname);
-    } catch (error) {
-      console.warn('Failed to clear project state:', error);
+
+    static loadProject(): { projectId: string; projectName: string } | null {
+        try {
+            // Try URL params first (most reliable on mobile)
+            const urlParams = new URLSearchParams(window.location.search);
+            const projectFromUrl = urlParams.get('project');
+            const nameFromUrl = urlParams.get('name');
+
+            if (projectFromUrl && nameFromUrl) {
+                return {
+                    projectId: projectFromUrl,
+                    projectName: decodeURIComponent(nameFromUrl)
+                };
+            }
+
+            // Fallback to storage
+            let data = null;
+            if (typeof localStorage !== 'undefined') {
+                data = localStorage.getItem(this.STORAGE_KEY);
+            }
+            if (!data && typeof sessionStorage !== 'undefined') {
+                data = sessionStorage.getItem(this.STORAGE_KEY);
+            }
+
+            if (data) {
+                const parsed = JSON.parse(data);
+                // Check if data is recent (within 24 hours)
+                if (Date.now() - parsed.timestamp < 24 * 60 * 60 * 1000) {
+                    return {
+                        projectId: parsed.projectId,
+                        projectName: parsed.projectName
+                    };
+                }
+            }
+
+            return null;
+        } catch (error) {
+            console.warn('Failed to load project state:', error);
+            return null;
+        }
     }
-  }
+
+    static clearProject(): void {
+        try {
+            if (typeof localStorage !== 'undefined') {
+                localStorage.removeItem(this.STORAGE_KEY);
+            }
+            if (typeof sessionStorage !== 'undefined') {
+                sessionStorage.removeItem(this.STORAGE_KEY);
+            }
+
+            // Clear URL params
+            const url = new URL(window.location.href);
+            url.searchParams.delete('project');
+            url.searchParams.delete('name');
+            window.history.replaceState({}, '', url.pathname);
+        } catch (error) {
+            console.warn('Failed to clear project state:', error);
+        }
+    }
 }
 
 // Toggle Switch Component
-const ToggleSwitch: React.FC<{ 
-  checked: boolean; 
-  onChange: (checked: boolean) => void; 
-  disabled?: boolean;
-  label: string;
-  description: string;
+const ToggleSwitch: React.FC<{
+    checked: boolean;
+    onChange: (checked: boolean) => void;
+    disabled?: boolean;
+    label: string;
+    description: string;
 }> = ({ checked, onChange, disabled, label, description }) => (
-  <div className="flex items-start space-x-3 p-4 bg-green-900/20 border border-green-800/50 rounded-xl">
-    <div className="flex items-center">
-      <button
-        type="button"
-        className={`${
-          checked ? 'bg-green-600' : 'bg-gray-600'
-        } relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 focus:ring-offset-gray-900 disabled:opacity-50 disabled:cursor-not-allowed`}
-        role="switch"
-        aria-checked={checked}
-        onClick={() => !disabled && onChange(!checked)}
-        disabled={disabled}
-      >
-        <span
-          className={`${
-            checked ? 'translate-x-5' : 'translate-x-0'
-          } pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out`}
-        />
-      </button>
+    <div className="flex items-start space-x-3 p-4 bg-green-900/20 border border-green-800/50 rounded-xl">
+        <div className="flex items-center">
+            <button
+                type="button"
+                className={`${checked ? 'bg-green-600' : 'bg-gray-600'
+                    } relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 focus:ring-offset-gray-900 disabled:opacity-50 disabled:cursor-not-allowed`}
+                role="switch"
+                aria-checked={checked}
+                onClick={() => !disabled && onChange(!checked)}
+                disabled={disabled}
+            >
+                <span
+                    className={`${checked ? 'translate-x-5' : 'translate-x-0'
+                        } pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out`}
+                />
+            </button>
+        </div>
+        <div className="flex-1">
+            <span className="text-sm font-medium text-green-300">{label}</span>
+            <p className="text-xs text-green-200 mt-1">{description}</p>
+        </div>
     </div>
-    <div className="flex-1">
-      <span className="text-sm font-medium text-green-300">{label}</span>
-      <p className="text-xs text-green-200 mt-1">{description}</p>
-    </div>
-  </div>
 );
 
 export const MainTts: React.FC = () => {
@@ -150,33 +148,37 @@ export const MainTts: React.FC = () => {
     useEffect(() => {
         const checkForActiveProject = async () => {
             try {
-                const savedProject = ProjectStateManager.loadProject();
-                if (savedProject) {
-                    console.log("Resuming project from storage:", savedProject.projectId);
-                    setAudioName(savedProject.projectName);
-                    setIsProcessing(true);
-                    pollProjectStatus(savedProject.projectId);
+                const urlParams = new URLSearchParams(window.location.search);
+                const projectFromUrl = urlParams.get('project');
+
+                if (projectFromUrl) {
+                    console.log("Resuming project from URL:", projectFromUrl);
+                    const savedProject = ProjectStateManager.loadProject();
+                    if (savedProject) {
+                        setAudioName(savedProject.projectName);
+                        setIsProcessing(true);
+                        pollProjectStatus(savedProject.projectId);
+                    }
                     return;
                 }
 
-                try {
-                    const response = await fetch('/api/active-projects');
-                    if (response.ok) {
-                        const activeProjects = await response.json();
-                        if (activeProjects.length > 0) {
-                            const activeProject = activeProjects[0];
-                            console.log("Found active project on server:", activeProject.id);
-                            
-                            // Update URL and storage with found project
-                            ProjectStateManager.saveProject(activeProject.id, activeProject.name || 'Recovered Project');
-                            setAudioName(activeProject.name || 'Recovered Project');
-                            setIsProcessing(true);
-                            pollProjectStatus(activeProject.id);
-                            return;
-                        }
+                const response = await fetch('/api/active-projects');
+                if (response.ok) {
+                    const activeProjects = await response.json();
+
+                    if (activeProjects.length > 0) {
+                        const activeProject = activeProjects[0];
+                        const projectName = activeProject.name || 'Recovered Project';
+                        console.log("Found active project on server, redirecting to:", activeProject.id);
+
+                        const newUrl = new URL(window.location.href);
+                        newUrl.searchParams.set('project', activeProject.id);
+                        newUrl.searchParams.set('name', encodeURIComponent(projectName));
+
+                        window.location.assign(newUrl.toString());
+
+                        return;
                     }
-                } catch (serverError) {
-                    console.log("No active projects endpoint available");
                 }
             } catch (error) {
                 console.warn("Error checking for active project:", error);
@@ -186,6 +188,7 @@ export const MainTts: React.FC = () => {
         };
 
         checkForActiveProject();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     const stopPolling = () => {
@@ -204,11 +207,11 @@ export const MainTts: React.FC = () => {
     };
 
     const startProject = async () => {
-        if (!mainText.trim() || !mainSelectedVoice || !audioName.trim()) { 
-            setError('Please provide text, a voice, and a project name.'); 
-            return; 
+        if (!mainText.trim() || !mainSelectedVoice || !audioName.trim()) {
+            setError('Please provide text, a voice, and a project name.');
+            return;
         }
-    
+
         const oldProject = ProjectStateManager.loadProject();
         if (oldProject) {
             try {
@@ -218,20 +221,20 @@ export const MainTts: React.FC = () => {
                 console.error("Failed to clean up previous project:", cleanupErr);
             }
         }
-    
+
         cleanupSession();
-        setIsProcessing(true); 
-        setError(null); 
+        setIsProcessing(true);
+        setError(null);
         setProject(null);
-    
+
         try {
             const response = await audioService.startProject(mainText, mainSelectedVoice.id, temperature, topP, autoNormalize);
             ProjectStateManager.saveProject(response.project_id, audioName);
-            
+
             if (response.was_normalized) {
                 console.log("Text was automatically normalized for optimal TTS generation");
             }
-            
+
             pollProjectStatus(response.project_id);
         } catch (err) {
             console.error('Project start error:', err);
@@ -244,9 +247,9 @@ export const MainTts: React.FC = () => {
         try {
             const data = await audioService.getProjectStatus(projectId);
             const currentProjectName = ProjectStateManager.loadProject()?.projectName || audioName;
-            
+
             setProject({ ...data, audioName: currentProjectName });
-            
+
             setRegeneratingChunks(prevSet => {
                 const newSet = new Set<number>();
                 data.chunks.forEach((chunk: Chunk, index: number) => {
@@ -256,17 +259,17 @@ export const MainTts: React.FC = () => {
                 });
                 return newSet;
             });
-            
+
             const isDone = ['completed', 'failed', 'review', 'cancelled', 'stitched'].includes(data.status);
             const hasProcessingChunks = data.chunks.some((chunk: Chunk) => chunk.status === 'processing');
-            
+
             if (!isDone || hasProcessingChunks) {
                 pollingTimeoutRef.current = setTimeout(() => pollProjectStatus(projectId), 2000);
             } else {
                 setIsProcessing(false);
                 setIsCancelling(false);
                 setRegeneratingChunks(new Set());
-                
+
                 if (data.status === 'cancelled') {
                     alert('Project has been cancelled.');
                     cleanupSession();
@@ -343,21 +346,21 @@ export const MainTts: React.FC = () => {
 
     const handleRegenerate = async (chunkIndex: number) => {
         if (!project) return;
-        
+
         try {
             setRegeneratingChunks(prev => new Set(prev.add(chunkIndex)));
             setError(null);
-            
+
             await audioService.regenerateChunk(project.id, chunkIndex);
-            
+
             stopPolling();
-            
+
             pollingTimeoutRef.current = setTimeout(() => pollProjectStatus(project.id), 1000);
-            
+
         } catch (err) {
             console.error(`Failed to regenerate chunk ${chunkIndex + 1}:`, err);
             setError(`Failed to regenerate chunk ${chunkIndex + 1}.`);
-            
+
             setRegeneratingChunks(prev => {
                 const newSet = new Set(prev);
                 newSet.delete(chunkIndex);
@@ -386,7 +389,7 @@ export const MainTts: React.FC = () => {
                         <p className="text-gray-400 text-sm">Generate long-form audio with chunk-by-chunk review</p>
                     </div>
                 </div>
-                
+
                 {!project ? (
                     <div className="space-y-6">
                         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -425,7 +428,7 @@ export const MainTts: React.FC = () => {
                                 label="Smart Text Optimization (Recommended)"
                                 description="Automatically fixes pronunciations, numbers, and formatting to prevent gibberish and audio errors (~$0.02 cost)"
                             />
-                            
+
                             {!autoNormalize && (
                                 <div className="p-4 bg-blue-900/20 border border-blue-800/50 rounded-xl">
                                     <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
@@ -447,15 +450,15 @@ export const MainTts: React.FC = () => {
                         {error && <p className="text-red-400 text-center text-sm">{error}</p>}
                     </div>
                 ) : (
-                    <ProjectView 
-                        project={project} 
-                        onRegenerate={handleRegenerate} 
-                        onStitch={handleStitch} 
-                        onDownload={handleDownloadFinal} 
+                    <ProjectView
+                        project={project}
+                        onRegenerate={handleRegenerate}
+                        onStitch={handleStitch}
+                        onDownload={handleDownloadFinal}
                         onDownloadNormalizedText={handleDownloadNormalizedText}
-                        onCancel={handleCancel} 
-                        onNewProject={cleanupSession} 
-                        isProcessing={isProcessing} 
+                        onCancel={handleCancel}
+                        onNewProject={cleanupSession}
+                        isProcessing={isProcessing}
                         isCancelling={isCancelling}
                         regeneratingChunks={regeneratingChunks}
                     />
@@ -466,15 +469,15 @@ export const MainTts: React.FC = () => {
     );
 };
 
-const ProjectView: React.FC<{ 
-    project: Project; 
-    onRegenerate: (index: number) => void; 
-    onStitch: () => void; 
-    onDownload: () => void; 
+const ProjectView: React.FC<{
+    project: Project;
+    onRegenerate: (index: number) => void;
+    onStitch: () => void;
+    onDownload: () => void;
     onDownloadNormalizedText: () => void;
-    onCancel: () => void; 
-    onNewProject: () => void; 
-    isProcessing: boolean; 
+    onCancel: () => void;
+    onNewProject: () => void;
+    isProcessing: boolean;
     isCancelling: boolean;
     regeneratingChunks: Set<number>;
 }> = ({ project, onRegenerate, onStitch, onDownload, onDownloadNormalizedText, onCancel, onNewProject, isProcessing, isCancelling, regeneratingChunks }) => {
@@ -507,9 +510,9 @@ const ProjectView: React.FC<{
             </div>
             <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-2">
                 {project.chunks.map((chunk, index) => (
-                    <ChunkItem 
-                        key={index} 
-                        chunk={chunk} 
+                    <ChunkItem
+                        key={index}
+                        chunk={chunk}
                         onRegenerate={() => onRegenerate(index)}
                         isCancelling={isCancelling}
                         isRegenerating={regeneratingChunks.has(index)}
@@ -540,13 +543,13 @@ const ProjectView: React.FC<{
     );
 };
 
-const ChunkItem: React.FC<{ 
-    chunk: Chunk; 
-    onRegenerate: () => void; 
+const ChunkItem: React.FC<{
+    chunk: Chunk;
+    onRegenerate: () => void;
     isCancelling: boolean;
     isRegenerating: boolean;
 }> = ({ chunk, onRegenerate, isCancelling, isRegenerating }) => {
-    
+
     const isCancellable = chunk.status === 'processing' || chunk.status === 'pending';
     const showRegeneratingState = isRegenerating && chunk.status === 'processing';
 
@@ -569,7 +572,7 @@ const ChunkItem: React.FC<{
                             {chunk.status === 'completed' && chunk.audio_filename && (
                                 <div className="space-y-3">
                                     <audio src={audioService.getAudioUrl(chunk.audio_filename)} controls className="w-full h-12 rounded-lg" style={{ minHeight: '48px' }} />
-                                    
+
                                     {chunk.index === 0 ? (
                                         <div className="text-center text-sm text-gray-500 pt-2">(Initial chunk can't be regenerated)</div>
                                     ) : (
@@ -590,7 +593,7 @@ const ChunkItem: React.FC<{
                             {chunk.status === 'failed' && (
                                 <div className="space-y-3">
                                     <div className="flex items-center justify-center gap-2 text-red-400 py-2"><IconX className="w-4 h-4" /><span className="text-sm">Generation failed</span></div>
-                                    
+
                                     {chunk.index === 0 ? (
                                         <div className="text-center text-sm text-gray-500 pt-1">(Initial chunk can't be retried)</div>
                                     ) : (
