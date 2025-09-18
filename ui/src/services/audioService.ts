@@ -43,7 +43,7 @@ class AudioService {
     formData.append('top_p', String(topP));
     formData.append('auto_normalize', String(autoNormalize));
     
-    const response = await axios.post('/api/project', formData, {
+    const response = await axios.post('/project', formData, {
       baseURL: API_CONFIG.BASE_URL,
       timeout: 0
     });

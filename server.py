@@ -332,18 +332,32 @@ def process_project_generation_sync(project_id: str):
 
             print(f"Starting generation for chunk {i+1}/{num_chunks} of project {project_id}")
             chunk.update({'status': 'processing', 'start_time': time.time()})
+            with open(project_path, 'w') as f:
+                json.dump(project, f, indent=2)
 
             try:
                 context_messages = get_context_messages(project, i)
                 audio_data = generate_single_chunk(chunk['text'], project['params']['temperature'], project['params']['top_p'], context_messages)
                 chunk_filename = f"{project_id}_chunk_{i}.wav"
                 sf.write(os.path.join(STORAGE_DIR, chunk_filename), audio_data, serve_engine.audio_tokenizer.sampling_rate)
-                chunk.update({'status': 'completed', 'audio_filename': chunk_filename})
+                with open(project_path, 'r') as f:
+                    project = json.load(f)
+                
+                chunk = project['chunks'][i]
+                chunk.update({
+                    'status': 'completed',
+                    'audio_filename': chunk_filename,
+                    'error': None
+                })
                 if i == 0 and is_smart_voice:
                     project["voice_ref_path"] = os.path.join(STORAGE_DIR, chunk_filename)
+
             except Exception as e:
                 print(f"Error on chunk {i} for {project_id}: {e}")
-                chunk.update({'status': 'failed', 'error': str(e)})
+                with open(project_path, 'r') as f:
+                    project = json.load(f)
+                project['chunks'][i].update({'status': 'failed', 'error': str(e)})
+
             finally:
                 chunk['elapsed_time'] = time.time() - chunk.get('start_time', time.time())
                 update_project_progress(project)
@@ -360,6 +374,7 @@ def process_project_generation_sync(project_id: str):
             json.dump(project, f, indent=2)
             f.truncate()
         print(f"Generation for {project_id} finished with status: {project['status']}")
+    
     except Exception as e:
         print(f"FATAL ERROR processing project {project_id}: {e}")
 

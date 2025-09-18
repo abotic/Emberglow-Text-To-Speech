@@ -8,9 +8,11 @@ import { Spinner } from '../ui/Spinner';
 import { ProgressBar } from '../ui/ProgressBar';
 import { IconRefreshCw, IconDownload, IconX, IconSave, IconFileText } from '../../icons';
 
+// --- INTERFACES ---
 interface Project { id: string; audioName?: string; chunks: Chunk[]; progress_percent?: number; completed_chunks?: number; total_chunks?: number; status?: string; was_normalized?: boolean; }
 interface Chunk { index: number; text: string; status: 'pending' | 'processing' | 'completed' | 'failed'; audio_filename?: string; elapsed_time?: number; error?: string; }
 
+// --- ProjectStateManager CLASS ---
 class ProjectStateManager {
     private static STORAGE_KEY = 'activeProject';
 
@@ -18,13 +20,11 @@ class ProjectStateManager {
         const data = { projectId, projectName, timestamp: Date.now() };
 
         try {
-            // Always update URL for RunPod compatibility
             const url = new URL(window.location.href);
             url.searchParams.set('project', projectId);
             url.searchParams.set('name', encodeURIComponent(projectName));
             window.history.replaceState({}, '', url.toString());
 
-            // Try storage as fallback
             if (typeof localStorage !== 'undefined') {
                 localStorage.setItem(this.STORAGE_KEY, JSON.stringify(data));
             }
@@ -41,7 +41,6 @@ class ProjectStateManager {
 
     static loadProject(): { projectId: string; projectName: string } | null {
         try {
-            // Try URL params first (most reliable on mobile and RunPod)
             const urlParams = new URLSearchParams(window.location.search);
             const projectFromUrl = urlParams.get('project');
             const nameFromUrl = urlParams.get('name');
@@ -53,7 +52,6 @@ class ProjectStateManager {
                 };
             }
 
-            // Fallback to storage
             let data = null;
             if (typeof localStorage !== 'undefined') {
                 data = localStorage.getItem(this.STORAGE_KEY);
@@ -64,7 +62,6 @@ class ProjectStateManager {
 
             if (data) {
                 const parsed = JSON.parse(data);
-                // Check if data is recent (within 24 hours)
                 if (Date.now() - parsed.timestamp < 24 * 60 * 60 * 1000) {
                     return {
                         projectId: parsed.projectId,
@@ -99,6 +96,7 @@ class ProjectStateManager {
     }
 }
 
+// --- ToggleSwitch COMPONENT ---
 const ToggleSwitch: React.FC<{
     checked: boolean;
     onChange: (checked: boolean) => void;
@@ -130,6 +128,7 @@ const ToggleSwitch: React.FC<{
     </div>
 );
 
+// --- MainTts COMPONENT ---
 export const MainTts: React.FC = () => {
     const { mainText, setMainText, mainSelectedVoice, setMainSelectedVoice, temperature, setTemperature, topP, setTopP, setShowTtsGuide } = useAudioContext();
     const [project, setProject] = useState<Project | null>(null);
@@ -160,7 +159,7 @@ export const MainTts: React.FC = () => {
                     return;
                 }
 
-                const response = await fetch('/api/active-projects');
+                const response = await fetch('/active-projects');
                 if (response.ok) {
                     const activeProjects = await response.json();
 
@@ -168,13 +167,11 @@ export const MainTts: React.FC = () => {
                         const activeProject = activeProjects[0];
                         const projectName = activeProject.name || 'Recovered Project';
                         console.log("Found active project on server, redirecting to:", activeProject.id);
-
-                        // Build absolute URL for RunPod proxy compatibility
+                        
                         const currentUrl = new URL(window.location.href);
                         currentUrl.searchParams.set('project', activeProject.id);
                         currentUrl.searchParams.set('name', encodeURIComponent(projectName));
 
-                        // Use replace for better proxy compatibility
                         window.location.replace(currentUrl.toString());
                         return;
                     }
@@ -469,6 +466,7 @@ export const MainTts: React.FC = () => {
     );
 };
 
+// --- ProjectView COMPONENT ---
 const ProjectView: React.FC<{
     project: Project;
     onRegenerate: (index: number) => void;
@@ -483,7 +481,8 @@ const ProjectView: React.FC<{
 }> = ({ project, onRegenerate, onStitch, onDownload, onDownloadNormalizedText, onCancel, onNewProject, isProcessing, isCancelling, regeneratingChunks }) => {
     const allChunksDone = project.chunks.every(c => c.status === 'completed');
     const hasProgress = project.progress_percent !== undefined;
-    const isProjectActive = ['processing', 'pending', 'cancelling'].includes(project.status || '');
+
+    const isProjectActive = ['processing', 'pending', 'cancelling', 'normalizing'].includes(project.status || '');
 
     return (
         <div className="space-y-6">
@@ -496,7 +495,12 @@ const ProjectView: React.FC<{
                             <p className="text-xs text-green-400 mt-1">Text was optimized for TTS</p>
                         )}
                     </div>
-                    {isProjectActive && (<Button variant="danger" size="sm" onClick={onCancel} isLoading={isCancelling} disabled={isCancelling}><IconX className="w-4 h-4 mr-2" />Cancel Project</Button>)}
+                    {isProjectActive && project.status !== 'normalizing' && (
+                        <Button variant="danger" size="sm" onClick={onCancel} isLoading={isCancelling} disabled={isCancelling}>
+                            <IconX className="w-4 h-4 mr-2" />
+                            Cancel Project
+                        </Button>
+                    )}
                 </div>
                 {hasProgress && (
                     <div className="space-y-2">
@@ -508,28 +512,39 @@ const ProjectView: React.FC<{
                     </div>
                 )}
             </div>
-            <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-2">
-                {project.chunks.map((chunk, index) => (
-                    <ChunkItem
-                        key={index}
-                        chunk={chunk}
-                        onRegenerate={() => onRegenerate(index)}
-                        isCancelling={isCancelling}
-                        isRegenerating={regeneratingChunks.has(index)}
-                    />
-                ))}
-            </div>
+
+            {project.status === 'normalizing' ? (
+                <div className="flex flex-col items-center justify-center text-center p-8 border-2 border-dashed border-gray-700 rounded-xl">
+                    <Spinner size="lg" />
+                    <h3 className="mt-4 text-lg font-semibold text-white">Preparing Your Script...</h3>
+                    <p className="mt-1 text-sm text-gray-400">
+                        The AI is optimizing your text for the best pronunciation and flow.
+                        This may take a minute for long scripts.
+                    </p>
+                </div>
+            ) : (
+                <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-2">
+                    {project.chunks.map((chunk, index) => (
+                        <ChunkItem
+                            key={index}
+                            chunk={chunk}
+                            onRegenerate={() => onRegenerate(index)}
+                            isCancelling={isCancelling}
+                            isRegenerating={regeneratingChunks.has(index)}
+                        />
+                    ))}
+                </div>
+            )}
+
             <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
                 <Button variant="ghost" size="lg" fullWidth onClick={onNewProject} disabled={isProcessing || isCancelling}>
                     <IconRefreshCw className="w-5 h-5 mr-2" />
                     New Project
                 </Button>
-                {project.was_normalized && (
-                    <Button variant="ghost" size="lg" fullWidth onClick={onDownloadNormalizedText} disabled={isProcessing || isCancelling}>
-                        <IconFileText className="w-5 h-5 mr-2" />
-                        Script
-                    </Button>
-                )}
+                <Button variant="ghost" size="lg" fullWidth onClick={onDownloadNormalizedText} disabled={isProcessing || isCancelling}>
+                    <IconFileText className="w-5 h-5 mr-2" />
+                    Script
+                </Button>
                 <Button variant="secondary" size="lg" fullWidth onClick={onDownload} disabled={!allChunksDone || isProcessing || isCancelling}>
                     <IconDownload className="w-5 h-5 mr-2" />
                     Download
