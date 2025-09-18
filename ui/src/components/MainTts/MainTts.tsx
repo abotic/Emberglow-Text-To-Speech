@@ -147,11 +147,9 @@ export const MainTts: React.FC = () => {
     const { voices, isLoadingVoices } = useVoices();
     const pollingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-    // Check for active projects on mount
     useEffect(() => {
         const checkForActiveProject = async () => {
             try {
-                // First check URL params and storage
                 const savedProject = ProjectStateManager.loadProject();
                 if (savedProject) {
                     console.log("Resuming project from storage:", savedProject.projectId);
@@ -161,8 +159,6 @@ export const MainTts: React.FC = () => {
                     return;
                 }
 
-                // If no stored project, check server for any active projects
-                // This prevents accidental new projects in incognito mode
                 try {
                     const response = await fetch('/api/active-projects');
                     if (response.ok) {

@@ -495,7 +495,7 @@ async def create_project(
         "params": {"temperature": temperature, "top_p": top_p},
         "chunks": [], # Chunks are now generated in the background
         "voice_ref_path": voice_ref_path,
-        "is_smart_voice": (voice_id == "smart_voice"),
+        "is_smart_voice": True,
         "was_normalized": False,
         "normalized_text": None,
     }
