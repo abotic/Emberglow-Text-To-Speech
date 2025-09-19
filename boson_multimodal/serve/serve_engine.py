@@ -187,11 +187,10 @@ class HiggsAudioServeEngine:
         if self.model.config.audio_dual_ffn_layers:
             cache_config.num_hidden_layers += len(self.model.config.audio_dual_ffn_layers)
 
-        # CRITICAL FIX: Use max_batch_size instead of batch_size
         self.kv_caches = {
             length: StaticCache(
                 config=cache_config,
-                max_batch_size=1,  # ✅ Fixed parameter name
+                max_batch_size=1,
                 max_cache_len=length,
                 device=self.model.device,
                 dtype=self.model.dtype,

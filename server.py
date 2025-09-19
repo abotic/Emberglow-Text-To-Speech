@@ -640,10 +640,72 @@ async def get_voices():
 @app.post("/clone-voice", tags=["Voices"])
 async def clone_voice(voice_sample: UploadFile = File(...), voice_name: str = Form(...)):
     voice_id = f"clone_{uuid.uuid4().hex[:8]}"
-    with open(os.path.join(CLONED_VOICES_DIR, f"{voice_id}.wav"), "wb") as buffer: buffer.write(await voice_sample.read())
-    metadata = {"id": voice_id, "name": voice_name, "tags": ["cloned"]}
-    with open(os.path.join(CLONED_VOICES_DIR, f"{voice_id}.json"), 'w') as f: json.dump(metadata, f)
+    with open(os.path.join(CLONED_VOICES_DIR, f"{voice_id}.wav"), "wb") as buffer: 
+        buffer.write(await voice_sample.read())
+    
+    metadata = {
+        "id": voice_id, 
+        "name": voice_name, 
+        "tags": ["cloned"],
+        "created_at": datetime.now().isoformat()
+    }
+    
+    with open(os.path.join(CLONED_VOICES_DIR, f"{voice_id}.json"), 'w') as f: 
+        json.dump(metadata, f, indent=2)
+    
     return metadata
+
+@app.post("/test-voice", tags=["Voices"])
+async def test_voice(
+    audio: UploadFile = File(...),
+    text: str = Form("This is a test of my cloned voice. How does it sound?"),
+    temperature: float = Form(0.2)
+):
+    """Test a voice sample by generating a short audio clip"""
+    if not audio.filename.lower().endswith(('.wav', '.mp3', '.m4a', '.ogg')):
+        raise HTTPException(status_code=400, detail="Invalid audio format")
+    
+    async with generation_lock:
+        try:
+            temp_filename = f"test_voice_{uuid.uuid4().hex[:8]}.wav"
+            temp_path = os.path.join(STORAGE_DIR, temp_filename)
+            
+            with open(temp_path, "wb") as buffer:
+                content = await audio.read()
+                buffer.write(content)
+            
+            with open(temp_path, "rb") as audio_file:
+                audio_base64 = base64.b64encode(audio_file.read()).decode('utf-8')
+            
+            context_messages = [
+                Message(role="user", content="Reference audio"),
+                Message(role="assistant", content=AudioContent(raw_audio=audio_base64, audio_url="placeholder"))
+            ]
+            
+            output = serve_engine.generate(
+                chat_ml_sample=ChatMLSample(messages=context_messages + [Message(role="user", content=text)]),
+                max_new_tokens=len(text) // 3 + 256,
+                stop_strings=["<|end_of_text|>", "<|eot_id|>"],
+                temperature=temperature,
+                top_p=0.95
+            )
+            
+            if output.audio is None or len(output.audio) == 0:
+                raise ValueError("Model produced no audio.")
+            
+            result_filename = f"test_result_{uuid.uuid4().hex[:8]}.wav"
+            result_path = os.path.join(STORAGE_DIR, result_filename)
+            sf.write(result_path, output.audio, serve_engine.audio_tokenizer.sampling_rate)
+            
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+            
+            return FileResponse(result_path, media_type="audio/wav")
+            
+        except Exception as e:
+            if 'temp_path' in locals() and os.path.exists(temp_path):
+                os.remove(temp_path)
+            raise HTTPException(status_code=500, detail=f"Voice test failed: {str(e)}")
 
 @app.post("/saved-audio", tags=["Saved Audio"])
 async def save_generated_audio(audio_filename: str = Form(...), display_name: str = Form(...), audio_type: str = Form("standard")):
@@ -670,6 +732,49 @@ async def get_audio_file(filename: str):
     for directory in [STORAGE_DIR, SAVED_AUDIO_DIR, CLONED_VOICES_DIR]:
         if os.path.exists(path := os.path.join(directory, filename)): return FileResponse(path, media_type="audio/wav")
     raise HTTPException(status_code=404, detail="File not found")
+
+@app.put("/voices/{voice_id}", tags=["Voices"])
+async def update_voice(voice_id: str, voice_data: dict):
+    """Update voice metadata (rename)"""
+    json_path = os.path.join(CLONED_VOICES_DIR, f"{voice_id}.json")
+    
+    if not os.path.exists(json_path):
+        raise HTTPException(status_code=404, detail="Voice not found")
+    
+    try:
+        with open(json_path, 'r') as f:
+            metadata = json.load(f)
+        
+        if 'name' in voice_data:
+            metadata['name'] = voice_data['name']
+        
+        with open(json_path, 'w') as f:
+            json.dump(metadata, f, indent=2)
+        
+        return metadata
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update voice: {str(e)}")
+
+@app.delete("/voices/{voice_id}", tags=["Voices"])
+async def delete_voice(voice_id: str):
+    """Delete a cloned voice"""
+    json_path = os.path.join(CLONED_VOICES_DIR, f"{voice_id}.json")
+    wav_path = os.path.join(CLONED_VOICES_DIR, f"{voice_id}.wav")
+    
+    if not os.path.exists(json_path):
+        raise HTTPException(status_code=404, detail="Voice not found")
+    
+    try:
+        if os.path.exists(json_path):
+            os.remove(json_path)
+        if os.path.exists(wav_path):
+            os.remove(wav_path)
+        
+        return {"message": "Voice deleted successfully"}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete voice: {str(e)}")
 
 app.mount("/assets", StaticFiles(directory="ui/dist/assets"), name="assets")
 @app.get("/{full_path:path}")

@@ -243,9 +243,9 @@ export const MainTts: React.FC = () => {
         try {
             const data = await audioService.getProjectStatus(projectId);
             const currentProjectName = ProjectStateManager.loadProject()?.projectName || audioName;
-
+    
             setProject({ ...data, audioName: currentProjectName });
-
+    
             setRegeneratingChunks(prevSet => {
                 const newSet = new Set<number>();
                 data.chunks.forEach((chunk: Chunk, index: number) => {
@@ -255,30 +255,34 @@ export const MainTts: React.FC = () => {
                 });
                 return newSet;
             });
-
+    
             const isDone = ['completed', 'failed', 'review', 'cancelled', 'stitched'].includes(data.status);
             const hasProcessingChunks = data.chunks.some((chunk: Chunk) => chunk.status === 'processing');
-
+    
             if (!isDone || hasProcessingChunks) {
                 pollingTimeoutRef.current = setTimeout(() => pollProjectStatus(projectId), 5000);
             } else {
                 setIsProcessing(false);
                 setIsCancelling(false);
                 setRegeneratingChunks(new Set());
-
+    
                 if (data.status === 'cancelled') {
-                    alert('Project has been cancelled.');
+                    // Don't show alert for cancelled projects, just clean up silently
                     cleanupSession();
                 }
             }
         } catch (err) {
             console.error('Polling error:', err);
-            setError('Could not retrieve project status. It may have been completed or deleted.');
+            
+            if (!isCancelling) {
+                setError('Could not retrieve project status. It may have been completed or deleted.');
+            }
+            
             setIsProcessing(false);
             setRegeneratingChunks(new Set());
             cleanupSession();
         }
-    }, [audioName]);
+    }, [audioName, isCancelling]);
 
     const handleCancel = async () => {
         if (!project) return;
@@ -531,6 +535,7 @@ const ProjectView: React.FC<{
                             onRegenerate={() => onRegenerate(index)}
                             isCancelling={isCancelling}
                             isRegenerating={regeneratingChunks.has(index)}
+                            allChunksDone={allChunksDone}
                         />
                     ))}
                 </div>
@@ -563,7 +568,8 @@ const ChunkItem: React.FC<{
     onRegenerate: () => void;
     isCancelling: boolean;
     isRegenerating: boolean;
-}> = ({ chunk, onRegenerate, isCancelling, isRegenerating }) => {
+    allChunksDone: boolean;
+}> = ({ chunk, onRegenerate, isCancelling, isRegenerating, allChunksDone }) => {
 
     const isCancellable = chunk.status === 'processing' || chunk.status === 'pending';
     const showRegeneratingState = isRegenerating && chunk.status === 'processing';
@@ -591,9 +597,15 @@ const ChunkItem: React.FC<{
                                     {chunk.index === 0 ? (
                                         <div className="text-center text-sm text-gray-500 pt-2">(Initial chunk can't be regenerated)</div>
                                     ) : (
-                                        <Button variant="secondary" size="sm" fullWidth onClick={onRegenerate} disabled={isRegenerating}>
+                                        <Button 
+                                            variant="secondary" 
+                                            size="sm" 
+                                            fullWidth 
+                                            onClick={onRegenerate} 
+                                            disabled={isRegenerating || !allChunksDone}
+                                        >
                                             <IconRefreshCw className={`w-4 h-4 mr-2 ${isRegenerating ? 'animate-spin' : ''}`} />
-                                            {isRegenerating ? 'Regenerating...' : 'Regenerate'}
+                                            {isRegenerating ? 'Regenerating...' : !allChunksDone ? 'Wait for completion...' : 'Regenerate'}
                                         </Button>
                                     )}
 
@@ -612,9 +624,15 @@ const ChunkItem: React.FC<{
                                     {chunk.index === 0 ? (
                                         <div className="text-center text-sm text-gray-500 pt-1">(Initial chunk can't be retried)</div>
                                     ) : (
-                                        <Button variant="danger" size="sm" fullWidth onClick={onRegenerate} disabled={isRegenerating}>
+                                        <Button 
+                                            variant="danger" 
+                                            size="sm" 
+                                            fullWidth 
+                                            onClick={onRegenerate} 
+                                            disabled={isRegenerating || !allChunksDone}
+                                        >
                                             <IconRefreshCw className={`w-4 h-4 mr-2 ${isRegenerating ? 'animate-spin' : ''}`} />
-                                            {isRegenerating ? 'Retrying...' : 'Retry'}
+                                            {isRegenerating ? 'Retrying...' : !allChunksDone ? 'Wait for completion...' : 'Retry'}
                                         </Button>
                                     )}
                                 </div>
