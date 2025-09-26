@@ -1,0 +1,1 @@
+export { MainTts } from './MainTts';

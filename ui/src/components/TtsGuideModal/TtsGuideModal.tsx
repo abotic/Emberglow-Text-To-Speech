@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useCallback, useState } from 'react';
 import { useAudioContext } from '../../context/AudioContext';
 import { IconX, IconCopy, IconDownload } from '../../icons';
 import { Button } from '../ui/Button';
@@ -49,34 +49,27 @@ Determine the correct mode from my instructions and proceed.`;
 
 export const TtsGuideModal: React.FC = () => {
   const { showTtsGuide, setShowTtsGuide } = useAudioContext();
+  const [copied, setCopied] = useState(false);
 
-  if (!showTtsGuide) return null;
-
-  const copyPromptToClipboard = async () => {
+  const copyPromptToClipboard = useCallback(async () => {
     try {
       await navigator.clipboard.writeText(TTS_MASTER_PROMPT);
-      // Show a brief success indicator
-      const button = document.getElementById('copy-prompt-btn');
-      if (button) {
-        const originalText = button.textContent;
-        button.textContent = 'Copied!';
-        setTimeout(() => {
-          button.textContent = originalText;
-        }, 2000);
-      }
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
     } catch (err) {
-      console.error('Failed to copy prompt:', err);
-      // Fallback: select the text
+      // Fallback copy for older browsers
       const textarea = document.createElement('textarea');
       textarea.value = TTS_MASTER_PROMPT;
       document.body.appendChild(textarea);
       textarea.select();
       document.execCommand('copy');
       document.body.removeChild(textarea);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
     }
-  };
+  }, []);
 
-  const downloadPrompt = () => {
+  const downloadPrompt = useCallback(() => {
     const blob = new Blob([TTS_MASTER_PROMPT], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -86,7 +79,9 @@ export const TtsGuideModal: React.FC = () => {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-  };
+  }, []);
+
+  if (!showTtsGuide) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/90 backdrop-blur-sm">
@@ -94,29 +89,17 @@ export const TtsGuideModal: React.FC = () => {
         <div className="p-8">
           <div className="flex items-center justify-between mb-6">
             <h2 className="text-3xl font-bold text-white">📝 TTS Script Writing Guide</h2>
-            <button
-              onClick={() => setShowTtsGuide(false)}
-              className="p-2 hover:bg-gray-700 rounded-lg transition-colors"
-            >
+            <button type="button" onClick={() => setShowTtsGuide(false)} className="p-2 hover:bg-gray-700 rounded-lg transition-colors">
               <IconX className="w-5 h-5 text-gray-400" />
             </button>
           </div>
 
           <div className="flex gap-3 mb-6">
-            <Button
-              variant="primary"
-              onClick={copyPromptToClipboard}
-              className="flex items-center gap-2"
-              id="copy-prompt-btn"
-            >
+            <Button variant="primary" onClick={copyPromptToClipboard} className="flex items-center gap-2">
               <IconCopy className="w-4 h-4" />
-              Copy Full Prompt
+              {copied ? 'Copied!' : 'Copy Full Prompt'}
             </Button>
-            <Button
-              variant="secondary"
-              onClick={downloadPrompt}
-              className="flex items-center gap-2"
-            >
+            <Button variant="secondary" onClick={downloadPrompt} className="flex items-center gap-2">
               <IconDownload className="w-4 h-4" />
               Download as TXT
             </Button>
@@ -125,16 +108,14 @@ export const TtsGuideModal: React.FC = () => {
           <div className="space-y-6 text-gray-300">
             <div className="p-6 bg-gradient-to-r from-blue-900/30 to-purple-900/30 border border-blue-700/50 rounded-xl">
               <h3 className="text-xl font-bold text-blue-300 mb-3">🚀 Master Scriptwriter Prompt</h3>
-              <p className="text-blue-200 mb-4">
-                Use this prompt with ChatGPT, Claude, or any AI to transform your text into TTS-optimized scripts:
-              </p>
+              <p className="text-blue-200 mb-4">Use this prompt with ChatGPT, Claude, or any AI to transform your text into TTS-optimized scripts:</p>
               <div className="bg-gray-900/80 p-4 rounded-lg border border-gray-700 font-mono text-sm text-gray-100 max-h-40 overflow-y-auto">
                 <pre className="whitespace-pre-wrap">{TTS_MASTER_PROMPT}</pre>
               </div>
               <div className="flex gap-2 mt-3">
                 <Button size="sm" variant="ghost" onClick={copyPromptToClipboard}>
                   <IconCopy className="w-3 h-3 mr-1" />
-                  Copy
+                  {copied ? 'Copied!' : 'Copy'}
                 </Button>
                 <Button size="sm" variant="ghost" onClick={downloadPrompt}>
                   <IconDownload className="w-3 h-3 mr-1" />
@@ -145,7 +126,6 @@ export const TtsGuideModal: React.FC = () => {
 
             <div>
               <h3 className="text-2xl font-bold text-white mb-4">📋 Core Narration Rules</h3>
-              
               <div className="space-y-4">
                 <div className="p-5 bg-gray-800/50 rounded-xl border border-gray-700">
                   <h4 className="font-bold text-yellow-300 mb-3 text-lg">1. Simplify Punctuation</h4>
@@ -194,7 +174,8 @@ export const TtsGuideModal: React.FC = () => {
                         <div className="space-y-1">
                           <p><span className="text-red-400">❌</span> "résumé"</p>
                           <p><span className="text-red-400">❌</span> "rez-oo-may"</p>
-                          <p><span className="text-red-400">❌</span> "jalapeño"</p>
+                          <p><span className="text-red-400">❌</span> "jalapeño"
+                          </p>
                           <p><span className="text-red-400">❌</span> "ha-la-pen-yo"</p>
                         </div>
                       </div>
@@ -237,9 +218,7 @@ export const TtsGuideModal: React.FC = () => {
 
             <div className="p-6 bg-gradient-to-r from-red-900/20 to-orange-900/20 border border-red-700/50 rounded-xl">
               <h4 className="font-bold text-red-300 mb-3 text-lg">🎯 Why This Matters</h4>
-              <p className="text-gray-300 mb-3">
-                Following these rules prevents common TTS issues:
-              </p>
+              <p className="text-gray-300 mb-3">Following these rules prevents common TTS issues:</p>
               <div className="grid md:grid-cols-2 gap-4 text-sm">
                 <ul className="space-y-1">
                   <li>🔄 Audio looping</li>
@@ -258,7 +237,7 @@ export const TtsGuideModal: React.FC = () => {
           <div className="mt-8 flex justify-center gap-3">
             <Button variant="primary" size="lg" onClick={copyPromptToClipboard}>
               <IconCopy className="w-5 h-5 mr-2" />
-              Copy Prompt & Start Writing
+              {copied ? 'Copied!' : 'Copy Prompt & Start Writing'}
             </Button>
             <Button variant="ghost" onClick={() => setShowTtsGuide(false)}>
               Close Guide

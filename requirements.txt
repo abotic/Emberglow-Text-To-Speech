@@ -22,6 +22,7 @@ jieba
 accelerate>=0.26.0
 
 # --- Server dependencies ---
+python-dotenv
 fastapi
 uvicorn[standard]
 python-multipart

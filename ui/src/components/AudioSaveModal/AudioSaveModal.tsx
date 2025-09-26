@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import { useAudioContext } from '../../context/AudioContext';
 import { audioService } from '../../services/audioService';
 import { IconX, IconSave } from '../../icons';
@@ -11,9 +11,15 @@ export const AudioSaveModal: React.FC = () => {
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  if (!showSaveModal || !audioToSave) return null;
+  const close = useCallback(() => {
+    setShowSaveModal(false);
+    setAudioToSave(null);
+    setDisplayName('');
+    setError(null);
+  }, [setAudioToSave, setShowSaveModal]);
 
-  const handleSave = async () => {
+  const handleSave = useCallback(async () => {
+    if (!audioToSave) return;
     if (!displayName.trim()) {
       setError('Please enter a name for your audio');
       return;
@@ -21,32 +27,17 @@ export const AudioSaveModal: React.FC = () => {
 
     setIsSaving(true);
     setError(null);
-
     try {
-      await audioService.saveGeneratedAudio(
-        audioToSave.filename,
-        displayName.trim(),
-        audioToSave.type
-      );
-      
-      // Close modal and reset
-      setShowSaveModal(false);
-      setAudioToSave(null);
-      setDisplayName('');
-      
-    } catch (err) {
+      await audioService.saveGeneratedAudio(audioToSave.filename, displayName.trim(), audioToSave.type);
+      close();
+    } catch {
       setError('Failed to save audio. Please try again.');
     } finally {
       setIsSaving(false);
     }
-  };
+  }, [audioToSave, close, displayName]);
 
-  const handleClose = () => {
-    setShowSaveModal(false);
-    setAudioToSave(null);
-    setDisplayName('');
-    setError(null);
-  };
+  if (!showSaveModal || !audioToSave) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
@@ -54,11 +45,7 @@ export const AudioSaveModal: React.FC = () => {
         <div className="p-6">
           <div className="flex items-center justify-between mb-6">
             <h2 className="text-xl font-semibold text-white">Save Audio</h2>
-            <button
-              onClick={handleClose}
-              className="p-2 hover:bg-gray-700 rounded-lg transition-colors"
-              disabled={isSaving}
-            >
+            <button type="button" onClick={close} className="p-2 hover:bg-gray-700 rounded-lg transition-colors" disabled={isSaving}>
               <IconX className="w-5 h-5 text-gray-400" />
             </button>
           </div>
@@ -81,8 +68,12 @@ export const AudioSaveModal: React.FC = () => {
             </div>
 
             <div className="text-xs text-gray-500 p-3 bg-gray-800/30 rounded-lg">
-              <p><strong>Type:</strong> {audioToSave.type === 'standard' ? 'Standard TTS' : 'Project Audio'}</p>
-              <p><strong>Source:</strong> {audioToSave.filename}</p>
+              <p>
+                <strong>Type:</strong> {audioToSave.type === 'standard' ? 'Standard TTS' : 'Project Audio'}
+              </p>
+              <p>
+                <strong>Source:</strong> {audioToSave.filename}
+              </p>
             </div>
 
             {error && (
@@ -92,21 +83,10 @@ export const AudioSaveModal: React.FC = () => {
             )}
 
             <div className="flex gap-3 pt-2">
-              <Button
-                variant="ghost"
-                fullWidth
-                onClick={handleClose}
-                disabled={isSaving}
-              >
+              <Button variant="ghost" fullWidth onClick={close} disabled={isSaving}>
                 Cancel
               </Button>
-              <Button
-                variant="primary"
-                fullWidth
-                onClick={handleSave}
-                isLoading={isSaving}
-                disabled={!displayName.trim()}
-              >
+              <Button variant="primary" fullWidth onClick={handleSave} isLoading={isSaving} disabled={!displayName.trim()}>
                 <IconSave className="w-4 h-4 mr-2" />
                 Save Audio
               </Button>

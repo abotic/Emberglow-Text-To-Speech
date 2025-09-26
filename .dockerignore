@@ -1,0 +1,12 @@
+**/.git
+**/__pycache__/
+**/*.py[cod]
+.venv/
+ui/node_modules/
+ui/.next/
+ui/dist/
+data/
+datasets/
+logs/
+*.pt
+*.ckpt
