@@ -1,6 +1,8 @@
 import torch
+
 from app.config import logger
 from boson_multimodal.serve.serve_engine import HiggsAudioServeEngine
+
 
 def _detect_device() -> str:
     if torch.cuda.is_available():
@@ -13,6 +15,7 @@ def _detect_device() -> str:
         return "mps"
     return "cpu"
 
+
 DEVICE = _detect_device()
 logger.info(f"Device: {DEVICE}")
 
@@ -21,5 +24,6 @@ serve_engine = HiggsAudioServeEngine(
     "bosonai/higgs-audio-v2-tokenizer",
     device=DEVICE,
 )
+
 logger.info(f"Model ready on {serve_engine.device}")
 SAMPLING_RATE = serve_engine.audio_tokenizer.sampling_rate

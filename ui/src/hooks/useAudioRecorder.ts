@@ -7,16 +7,17 @@ interface UseAudioRecorderReturn {
   isRecording: boolean;
   recordingTime: number;
   recordingUrl: string | null;
+  recordedFile: File | null;
   start: () => Promise<void>;
   stop: () => void;
   reset: () => void;
-  getWavFile: () => Promise<File | null>;
 }
 
 export const useAudioRecorder = (): UseAudioRecorderReturn => {
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
   const [recordingUrl, setRecordingUrl] = useState<string | null>(null);
+  const [recordedFile, setRecordedFile] = useState<File | null>(null);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -42,13 +43,21 @@ export const useAudioRecorder = (): UseAudioRecorderReturn => {
     mediaRecorderRef.current = recorder;
     chunksRef.current = [];
     setRecordingTime(0);
+    setRecordedFile(null);
 
-    recorder.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
+    recorder.ondataavailable = (e) => { 
+      if (e.data.size > 0) chunksRef.current.push(e.data); 
+    };
+    
     recorder.onstop = async () => {
       const originalBlob = new Blob(chunksRef.current, { type: mimeType });
       const wavBlob = await convertBlobToWav(originalBlob);
       const url = URL.createObjectURL(wavBlob);
       setRecordingUrl(url);
+      
+      const file = new File([wavBlob], 'recorded-voice.wav', { type: 'audio/wav' });
+      setRecordedFile(file);
+      
       stream.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
     };
@@ -70,16 +79,9 @@ export const useAudioRecorder = (): UseAudioRecorderReturn => {
     if (recordingUrl) URL.revokeObjectURL(recordingUrl);
     setRecordingUrl(null);
     setRecordingTime(0);
+    setRecordedFile(null);
     chunksRef.current = [];
   }, [recordingUrl]);
-
-  const getWavFile = useCallback(async (): Promise<File | null> => {
-    if (!chunksRef.current.length) return null;
-    const mime = mediaRecorderRef.current?.mimeType || 'audio/webm';
-    const originalBlob = new Blob(chunksRef.current, { type: mime });
-    const wavBlob = await convertBlobToWav(originalBlob);
-    return new File([wavBlob], 'recorded-voice.wav', { type: 'audio/wav' });
-  }, []);
 
   useEffect(() => () => {
     clearTimer();
@@ -87,5 +89,5 @@ export const useAudioRecorder = (): UseAudioRecorderReturn => {
     if (streamRef.current) streamRef.current.getTracks().forEach((t) => t.stop());
   }, [recordingUrl]);
 
-  return { isRecording, recordingTime, recordingUrl, start, stop, reset, getWavFile };
+  return { isRecording, recordingTime, recordingUrl, recordedFile, start, stop, reset };
 };

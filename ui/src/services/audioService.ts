@@ -1,4 +1,4 @@
-import axios from 'axios';
+import axios, { AxiosInstance } from 'axios';
 import { Voice } from '../types';
 import { API_CONFIG } from '../utils/constants';
 
@@ -12,16 +12,28 @@ export interface SavedAudio {
 }
 
 class AudioService {
-  private apiClient = axios.create({ baseURL: API_CONFIG.BASE_URL, timeout: 60000 });
-  private longRunningClient = axios.create({ baseURL: API_CONFIG.BASE_URL, timeout: 0 });
+  private apiClient: AxiosInstance;
+  private longRunningClient: AxiosInstance;
 
-  async getActiveProjects(): Promise<{ id: string; name: string; status: string }[]> {
-    const { data } = await this.apiClient.get('/active-projects');
-    return data;
+  constructor() {
+    this.apiClient = axios.create({
+      baseURL: API_CONFIG.BASE_URL,
+      timeout: 60000
+    });
+
+    this.longRunningClient = axios.create({
+      baseURL: API_CONFIG.BASE_URL,
+      timeout: 0
+    });
   }
 
   async getConfig(): Promise<{ is_openai_enabled: boolean }> {
     const { data } = await this.apiClient.get('/config');
+    return data;
+  }
+
+  async getActiveProjects(): Promise<{ id: string; name: string; status: string }[]> {
+    const { data } = await this.apiClient.get('/active-projects');
     return data;
   }
 
@@ -38,6 +50,14 @@ class AudioService {
     return data;
   }
 
+  async renameVoice(voiceId: string, newName: string): Promise<void> {
+    await this.apiClient.put(`/voices/${voiceId}`, { name: newName });
+  }
+
+  async deleteVoice(voiceId: string): Promise<void> {
+    await this.apiClient.delete(`/voices/${voiceId}`);
+  }
+
   async testVoice(sample: File, text: string, temperature = 0.2): Promise<Blob> {
     const formData = new FormData();
     formData.append('audio', sample);
@@ -47,15 +67,13 @@ class AudioService {
     return data as Blob;
   }
 
-  async deleteVoice(voiceId: string): Promise<void> {
-    await this.apiClient.delete(`/voices/${voiceId}`);
-  }
-
-  async renameVoice(voiceId: string, newName: string): Promise<void> {
-    await this.apiClient.put(`/voices/${voiceId}`, { name: newName });
-  }
-
-  async startProject(text: string, voiceId: string, temperature: number, topP: number, autoNormalize = true): Promise<{ project_id: string; was_normalized?: boolean }> {
+  async startProject(
+    text: string,
+    voiceId: string,
+    temperature: number,
+    topP: number,
+    autoNormalize = true
+  ): Promise<{ project_id: string; was_normalized?: boolean }> {
     const formData = new FormData();
     formData.append('text', text);
     formData.append('voice_id', voiceId);
@@ -72,7 +90,9 @@ class AudioService {
   }
 
   async regenerateChunk(projectId: string, chunkIndex: number): Promise<any> {
-    const { data } = await this.longRunningClient.post(`/project/${projectId}/chunk/${chunkIndex}/regenerate`);
+    const { data } = await this.longRunningClient.post(
+      `/project/${projectId}/chunk/${chunkIndex}/regenerate`
+    );
     return data;
   }
 
@@ -81,30 +101,36 @@ class AudioService {
     return data;
   }
 
-  async cleanupProject(projectId: string): Promise<{ message: string }> {
-    const { data } = await this.apiClient.post(`/project/${projectId}/cleanup`);
-    return data;
-  }
-
   async cancelProject(projectId: string): Promise<{ message: string }> {
     const { data } = await this.apiClient.post(`/project/${projectId}/cancel`);
     return data;
   }
 
+  async cleanupProject(projectId: string): Promise<{ message: string }> {
+    const { data } = await this.apiClient.post(`/project/${projectId}/cleanup`);
+    return data;
+  }
+
   async downloadNormalizedText(projectId: string, filename: string): Promise<void> {
-    const { data } = await this.apiClient.get(`/project/${projectId}/normalized-text`, { responseType: 'blob' });
+    const { data } = await this.apiClient.get(`/project/${projectId}/normalized-text`, {
+      responseType: 'blob'
+    });
     const blob = new Blob([data], { type: 'text/plain' });
     const url = window.URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
     window.URL.revokeObjectURL(url);
   }
 
-  async saveGeneratedAudio(audioFilename: string, displayName: string, audioType: 'standard' | 'project'): Promise<SavedAudio> {
+  async saveGeneratedAudio(
+    audioFilename: string,
+    displayName: string,
+    audioType: 'standard' | 'project'
+  ): Promise<SavedAudio> {
     const formData = new FormData();
     formData.append('audio_filename', audioFilename);
     formData.append('display_name', displayName);

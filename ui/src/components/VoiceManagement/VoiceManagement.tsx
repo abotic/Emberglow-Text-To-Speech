@@ -26,7 +26,7 @@ export const VoiceManagement: React.FC = () => {
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  const { isRecording, recordingTime, recordingUrl, start, stop, reset, getWavFile } = useAudioRecorder();
+  const { isRecording, recordingTime, recordingUrl, recordedFile, start, stop, reset } = useAudioRecorder();
 
   const loadVoices = async () => {
     try {
@@ -45,6 +45,12 @@ export const VoiceManagement: React.FC = () => {
   useEffect(() => () => {
     if (testAudioUrl) URL.revokeObjectURL(testAudioUrl);
   }, [testAudioUrl]);
+
+  useEffect(() => {
+    if (recordedFile && !isRecording) {
+      setVoiceToClone(recordedFile);
+    }
+  }, [recordedFile, isRecording]);
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -83,10 +89,8 @@ export const VoiceManagement: React.FC = () => {
     }
   };
 
-  const stopRecording = async () => {
+  const stopRecording = () => {
     stop();
-    const file = await getWavFile();
-    if (file) setVoiceToClone(file);
   };
 
   const handleTestVoice = async () => {
