@@ -2,9 +2,6 @@
 
 > Professional long-form text-to-speech generation powered by Higgs Audio V2
 
-### Demo video
-[![Emberglow TTS](https://img.youtube.com/vi/A7t4EBLahkk/maxresdefault.jpg)](https://www.youtube.com/watch?v=A7t4EBLahkk)
-
 ## Acknowledgments
 
 This project is built on top of the incredible [Higgs Audio V2](https://github.com/boson-ai/higgs-audio) model by [Boson AI](https://www.boson.ai/). Their groundbreaking work in audio generation makes this application possible. Higgs Audio V2 is a state-of-the-art audio foundation model trained on over 10 million hours of audio data, achieving exceptional performance in emotional expressiveness and multi-speaker generation. Huge thanks to the Boson AI team for open-sourcing this technology and pushing the boundaries of what's possible in AI audio generation.
@@ -38,6 +35,13 @@ I wanted a tool that could take a full script—whether it's a 20-minute video n
 - **Project management** to organize and save your work
 
 The result is a system that bridges the gap between basic TTS tools and professional audio production.
+
+---
+
+### Demo video (click to start)
+[![Emberglow TTS](https://img.youtube.com/vi/A7t4EBLahkk/maxresdefault.jpg)](https://www.youtube.com/watch?v=A7t4EBLahkk)
+
+---
 
 ## Features
 
